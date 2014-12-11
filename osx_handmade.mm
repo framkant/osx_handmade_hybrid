@@ -53,8 +53,6 @@ static NSWindow* s_window;
     }else {
 	NSLog(@"no windows");
     }
-    
-    
 }
 
 - (void)applicationWillTerminate:(NSNotification *)aNotification {
