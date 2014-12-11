@@ -1,6 +1,24 @@
 #import <Cocoa/Cocoa.h>
 #import <CoreVideo/CVDisplayLink.h>
 
+// NOTE:
+// This is a work in progress.
+// I trying to understand how the cocoa run loop works
+// For the moment this is a hybrid approach where I have a xib with
+// window, some kind of default view, menubar etc
+// I use the simple view from @zenmumbler for making sure
+// the view is set at all.
+//
+// Currently there are many problems:
+// 1. Doesn't seem to terminate as expected
+// 2. lot's of implicit things depending on names set in the XIB and plist
+//   - the build script (makebundle) creates a plist where the principa class
+//     is set to <bundlename>Application, so using "Handmade" for bundlename
+//     we get a principal class "HandmadeApplication"
+//     this needs to be set in the XIB as well
+//     it is assumed you do this on the initial setup in xcode
+
+
 
 // Globals
 static NSWindow* s_window;
