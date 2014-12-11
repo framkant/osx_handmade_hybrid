@@ -55,7 +55,7 @@ if [ ! -f "${bundleName}.app/Contents/Info.plist" ]; then
                 <key>NSMainNibFile</key>
 	        <string>MainMenu</string>
 	        <key>NSPrincipalClass</key>
-	        <string>NSApplication</string>
+	        <string>${bundleShort}Application</string>
 		
 </dict>
 </plist>
