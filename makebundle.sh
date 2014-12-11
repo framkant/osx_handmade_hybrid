@@ -11,6 +11,7 @@ bundleName="$1"
 
 bundleShort=${bundleName##*/} 
 
+rm -rf "${bundleName}.app/"
 
 if [ ! -d "${bundleName}.app/Contents/MacOS" ]; then
   mkdir -p "${bundleName}.app/Contents/MacOS"
@@ -55,7 +56,7 @@ if [ ! -f "${bundleName}.app/Contents/Info.plist" ]; then
                 <key>NSMainNibFile</key>
 	        <string>MainMenu</string>
 	        <key>NSPrincipalClass</key>
-	        <string>${bundleShort}Application</string>
+	        <string>NSApplication</string>
 		
 </dict>
 </plist>

@@ -39,10 +39,6 @@ static NSWindow* s_window;
 - (void)applicationDidFinishLaunching:(NSNotification *)aNotification{
     NSLog(@"applicationDidFinishLaunching");
    
-    /*NSApplication* app = [NSApplication sharedApplication];
-    NSArray * windows = [app windows];
-    NSLog(@"num windows: %d", [windows count]);
-    */
     if (window)
     {
 	NSLog(@"We also have a window");
@@ -159,14 +155,14 @@ static NSWindow* s_window;
     
 }
 
-- (void)terminate:(id)sender
+- (void)terminate:(id)senderframe
 {
     NSLog(@"got termninte");
     _shouldKeepRunning = NO;
 }
 
 @end
-
+static NSArray* s_nibObjects;
 int HandmadeApplicationMain(int argc, const char **argv)
 {
     NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
@@ -178,12 +174,22 @@ int HandmadeApplicationMain(int argc, const char **argv)
 	NSClassFromString([infoDictionary objectForKey:@"NSPrincipalClass"]);
     NSApplication *applicationObject = [principalClass sharedApplication];
 
+    AppDelegate *appDelegate = [applicationObject delegate];
     NSString *mainNibName = [infoDictionary objectForKey:@"NSMainNibFile"];
-    NSNib *mainNib = [[NSNib alloc] initWithNibNamed:mainNibName bundle:[NSBundle mainBundle]];
-
+    [[NSBundle mainBundle] loadNibNamed: mainNibName owner:appDelegate topLevelObjects: &s_nibObjects];
+//    NSNib *mainNib = [[NSNib alloc] initWithNibNamed:mainNibName bundle:[NSBundle mainBundle]];
+    NSLog([principalClass description]);
+    NSLog(@"Main nib name");
+    NSLog(mainNibName);
     // NOTE: top level objects need to be retained or they will be deallocated
-    NSArray* nibObjects;
-    [mainNib instantiateWithOwner:applicationObject topLevelObjects:&nibObjects];
+
+
+    if(applicationObject)
+    {
+	NSLog(@"Got valid app");
+    }
+    
+    // [mainNib instantiateWithOwner:applicationObject topLevelObjects:&s_nibObjects];
     NSLog(@"HandmadeApplicationMain");
 
     // get frame from window
@@ -197,7 +203,7 @@ int HandmadeApplicationMain(int argc, const char **argv)
 				      waitUntilDone:YES];
     }
     NSLog(@"HandmadeApplicationMain after run");
-    [mainNib release];
+    //[mainNib release];
     [pool release];
 	
     return 0;
