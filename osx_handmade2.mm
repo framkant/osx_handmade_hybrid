@@ -8,9 +8,15 @@
 static NSWindow *s_window;
 static HHView *s_view;
 
-// in NIB:MainMenu in file Handmade.xib (that is converted to Handmade.nib)
+// in NIB: "MainMenu" in file "Handmade.xib" (that is converted to Handmade.nib)
+// - window IBoutlet
+// - delegate IBoutlet
+
+
+// In plist (that I create in makebudle script
 // - menus
 // - principal class (NSApplication)
+// 
 
 // View
 
@@ -129,15 +135,19 @@ static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink,
 	
     }
     */
-    //glClearColor(1,1,1,1);
-    //glClear(GL_COLOR_BUFFER_BIT);
-    // copy into texture
 
+
+    // copy into texture
     
     [[self openGLContext] makeCurrentContext];
+
+    glClearColor(0.2, 0.2 ,0.22, 1);
     
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-    // draw on a quad for the whole screen
+    // draw on a large triangle covering the whole screen
+    
+    
+    
 
     CGLFlushDrawable([[self openGLContext] CGLContextObj]);
     CGLUnlockContext([[self openGLContext] CGLContextObj]);

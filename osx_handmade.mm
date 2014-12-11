@@ -65,6 +65,7 @@ static NSWindow* s_window;
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication*)sender
 {
+    NSLog(@"applicationShouldTerminateAfterLastWindowClosed");
     return YES;
 }
 
