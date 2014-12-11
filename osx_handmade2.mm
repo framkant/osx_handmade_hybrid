@@ -1,6 +1,7 @@
 #import <Cocoa/Cocoa.h>
+#import <OpenGL/gl3.h>
 
-// ffwd ddecl
+// ffwd decl
 @class HHView;
 
 // Globals
@@ -14,10 +15,9 @@ static HHView *s_view;
 // View
 
 // simple view from zenmumbler
-@interface HHView : NSView {
-    void* dataPtr_;
-    CGContextRef backBuffer_;
-    CVDisplayLinkRef        displayLink_;
+@interface HHView : NSOpenGLView {
+    CVDisplayLinkRef        _displayLink;
+    void *                  _dataPtr;
 }
 - (instancetype)initWithFrame:(NSRect)frameRect;
 - (CVReturn) getFrameForTime:(const CVTimeStamp*)outputTime;
@@ -33,46 +33,69 @@ static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink,
 				    void* displayLinkContext)
 {
     CVReturn result = [(__bridge HHView*)displayLinkContext getFrameForTime:outputTime];
-    
+    NSLog(@"callback");
     return result;
 }
 
 @implementation HHView
 
 - (instancetype)initWithFrame:(NSRect)frameRect {
-	self = [super initWithFrame: frameRect];
-	if (self) {
-		int width = frameRect.size.width;
-		int height = frameRect.size.height;
-		int rowBytes = 4 * width;
-		dataPtr_ = calloc(1, rowBytes * height); // calloc clears memory upon first touch
-		
-		CMProfileRef prof; // these 2 calls are deprecated as of 10.6, but still work and I can't find their modern equivalent.
-		CMGetSystemProfile(&prof);
-		CGColorSpaceRef colorSpace = CGColorSpaceCreateWithPlatformColorSpace(prof);
-		
-		backBuffer_ = CGBitmapContextCreate(dataPtr_, width, height, 8, rowBytes, colorSpace, kCGImageAlphaNoneSkipLast | kCGBitmapByteOrderDefault);
-		CGColorSpaceRelease(colorSpace);
-		CMCloseProfile(prof);
-	}
+    NSLog(@"initWithFrame");
+    // setup pixel format
+    NSOpenGLPixelFormatAttribute attribs[] = {
+	NSOpenGLPFAOpenGLProfile, NSOpenGLProfileVersion3_2Core,
+	NSOpenGLPFAAccelerated,
+	NSOpenGLPFADoubleBuffer,
+	NSOpenGLPFADepthSize, 24,
+	NSOpenGLPFAAlphaSize, 8,
+	NSOpenGLPFAColorSize, 32,
+	NSOpenGLPFADepthSize, 24,
+	NSOpenGLPFANoRecovery,
+	kCGLPFASampleBuffers, 1,
+	kCGLPFASamples, 1,
+	0
+    };
+    
+    NSOpenGLPixelFormat *fmt = [[NSOpenGLPixelFormat alloc]
+				       initWithAttributes: attribs];
+    
+    self = [super initWithFrame: frameRect pixelFormat:fmt];
 
-	// Display link
-	CVDisplayLinkCreateWithActiveCGDisplays(&displayLink_);
-        if (displayLink_ != NULL) {
-	    CGDirectDisplayID displayId = CVDisplayLinkGetCurrentCGDisplay(displayLink_);
-	    CVDisplayLinkSetCurrentCGDisplay(displayLink_, displayId);
-	    CVDisplayLinkSetOutputCallback(displayLink_, &DisplayLinkCallback, self);
-            
-            // Activate the display link
-            CVDisplayLinkStart(displayLink_);
-        }
-
-	
-	return self;
+    
+    if (self) {
+	int width = frameRect.size.width;
+	int height = frameRect.size.height;
+	int rowBytes = 4 * width;
+	_dataPtr = calloc(1, rowBytes * height); // calloc clears memory upon first touch	
+    }
+    
+   
+    
+    return self;
 }
 
+- (void)prepareOpenGL
+{
+    NSLog(@"Preparing opengl");
+    [super prepareOpenGL];
+    [[self openGLContext] makeCurrentContext];
+    [[self window] makeKeyAndOrderFront: self];
+    
+    GLint swapInt = 1;
+    [[self openGLContext] setValues:&swapInt forParameter:NSOpenGLCPSwapInterval];
+
+    // Display link
+    CVDisplayLinkCreateWithActiveCGDisplays(&_displayLink);
+    CVDisplayLinkSetOutputCallback(_displayLink, &DisplayLinkCallback, (__bridge void *)(self));
+
+    CGLContextObj cglContext = [[self openGLContext] CGLContextObj];
+    CGLPixelFormatObj cglPixelFormat = [[self pixelFormat] CGLPixelFormatObj];
+    CVDisplayLinkSetCurrentCGDisplayFromOpenGLContext(_displayLink, cglContext, cglPixelFormat);
+    CVDisplayLinkStart(_displayLink);
+}
 - (CVReturn) getFrameForTime:(const CVTimeStamp*)outputTime
 {
+    NSLog(@"getFrameForTImel");
     @autoreleasepool
     {
 	[self drawRect: NSZeroRect];
@@ -81,12 +104,16 @@ static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink,
     return kCVReturnSuccess;
 }
 - (void*)bitmapData {
-	return dataPtr_;
+    return _dataPtr;
 }
 
 - (void)drawRect:(NSRect)dirtyRect {
 
-    static int xOffset = 100;
+    NSLog(@"drawing");
+    CGLLockContext([[self openGLContext] CGLContextObj]);
+    
+    // Update the buffer
+    /*static int xOffset = 100;
     xOffset++;
     printf("x: %d\n", xOffset);
     uint32_t *bitmap = (uint32_t*)([s_view bitmapData]);
@@ -101,12 +128,20 @@ static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink,
 	}
 	
     }
-        
-    CGContextRef ctx = [[NSGraphicsContext currentContext] CGContext];
-    CGImageRef backImage = CGBitmapContextCreateImage(backBuffer_);
-    CGContextDrawImage(ctx, self.frame, backImage);
-    CGImageRelease(backImage);
-}
+    */
+    //glClearColor(1,1,1,1);
+    //glClear(GL_COLOR_BUFFER_BIT);
+    // copy into texture
+
+    
+    [[self openGLContext] makeCurrentContext];
+    
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    // draw on a quad for the whole screen
+
+    CGLFlushDrawable([[self openGLContext] CGLContextObj]);
+    CGLUnlockContext([[self openGLContext] CGLContextObj]);
+ }
 @end
 
 
@@ -120,17 +155,16 @@ static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink,
 @synthesize window;
 
 - (void)applicationDidFinishLaunching:(NSNotification *)aNotification{
+
+    // Get a pointer the window (it is defined in the NIB)
+    // Create a View for drawing graphics
     NSLog(@"applicationDidFinishLaunching");
-   
     if (window)
     {
-	NSLog(@"We also have a window");
 	s_window = window;
-
-	NSRect rect = [[s_window contentView] bounds];
-	s_view = [[HHView alloc] initWithFrame:rect];
+	NSRect frame = [[s_window contentView] bounds];
+	s_view = [[HHView alloc] initWithFrame: frame];
 	[s_window setContentView: s_view];
-	
     }
 }
 
@@ -150,6 +184,7 @@ static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink,
 // Entry
 
 int main(int argc, const char * argv[]) {
+    NSLog(@"Starting");
     return NSApplicationMain(argc, argv);
 }
 
