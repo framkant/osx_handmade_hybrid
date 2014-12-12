@@ -10,4 +10,4 @@ ibtool --compile build/MainMenu.nib osx_support_files/MainMenu.xib
 cp build/MainMenu.nib build/Handmade.app/Contents/Resources/Base.lproj/MainMenu.nib
 
 # compile and link the code, put inside folder structure
-clang -g -Wall -DHANDMADE_INTERNAL=1 -DHANDMADE_SLOW=1 -DHANDMADE_OSX=1 -framework Cocoa -framework QuartzCore -framework OpenGL -framework IOKit -framework AudioUnit -o build/Handmade.app/Contents/MacOS/Handmade osx_handmade2.mm
+clang -g -Wall -DHANDMADE_INTERNAL=1 -DHANDMADE_SLOW=1 -DHANDMADE_OSX=1 -framework Cocoa -framework QuartzCore -framework OpenGL -framework IOKit -framework AudioUnit -o build/Handmade.app/Contents/MacOS/Handmade osx_handmade.mm

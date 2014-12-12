@@ -1,33 +1,376 @@
 #import <Cocoa/Cocoa.h>
-#import <CoreVideo/CVDisplayLink.h>
+#import <OpenGL/gl3.h>
 
-// NOTE:
-// This is a work in progress.
-// I trying to understand how the cocoa run loop works
-// For the moment this is a hybrid approach where I have a xib with
-// window, some kind of default view, menubar etc
-// I use the simple view from @zenmumbler for making sure
-// the view is set at all.
-//
-// Currently there are many problems:
-// 1. Doesn't seem to terminate as expected
-// 2. lot's of implicit things depending on names set in the XIB and plist
-//   - the build script (makebundle) creates a plist where the principa class
-//     is set to <bundlename>Application, so using "Handmade" for bundlename
-//     we get a principal class "HandmadeApplication"
-//     this needs to be set in the XIB as well
-//     it is assumed you do this on the initial setup in xcode
-
-
+@class HandmadeView;
 
 // Globals
-static NSWindow* s_window;
-@class HHView;
+static NSWindow *s_window;
+static HandmadeView *s_view;
+
+// in NIB: "MainMenu" in file "Handmade.xib"
+// (that is converted to Handmade.nib using libtool and copied into bundle)
+// - window IBoutlet
+// - delegate IBoutlet
+
+// In plist (that I create in makebudle script)
+// - menus
+// - principal class "NSApplication"
+// 
+
+const char* GetErrorString(GLenum errorCode)
+{
+    static const struct {
+        GLenum code;
+        const char *string;
+    } errors[]=
+    {
+        /* GL */
+        {GL_NO_ERROR, "no error"},
+        {GL_INVALID_ENUM, "invalid enumerant"},
+        {GL_INVALID_VALUE, "invalid value"},
+        {GL_INVALID_OPERATION, "invalid operation"},
+//        {GL_STACK_OVERFLOW, "stack overflow"},
+//        {GL_STACK_UNDERFLOW, "stack underflow"},
+        {GL_OUT_OF_MEMORY, "out of memory"},
+
+        {0, NULL }
+    };
+
+    int i;
+
+    for (i=0; errors[i].string; i++)
+    {
+        if (errors[i].code == errorCode)
+        {
+            return errors[i].string;
+        }
+     }
+
+    return NULL;
+}
+int PrintOglError(char *file, int line)
+{
+
+    GLenum glErr;
+    int    retCode = 0;
+
+    glErr = glGetError();
+    if (glErr != GL_NO_ERROR)
+    {
+        printf("glError in file %s @ line %d: %s\n",
+			     file, line, GetErrorString(glErr));
+        retCode = 1;
+    }
+    return retCode;
+}
+#define PrintOpenGLError() PrintOglError(__FILE__, __LINE__)
 
 
-// Application delegate that takes care of init  and terminiation
-// NOTE: why can this not be in the Application object itself?
-// Can I let NSApplication implement the <NSApplicationDelegate> protocol?
+// View
+
+@interface HandmadeView : NSOpenGLView {
+    CVDisplayLinkRef        _displayLink;
+    void *                  _dataPtr;
+    uint32_t   _renderBufferWidth;
+    uint32_t   _renderBufferHeight;
+
+    GLuint _vao;
+    GLuint _vbo;
+    GLuint _tex;
+    GLuint _program;
+    
+}
+
+- (instancetype)initWithFrame:(NSRect)frameRect;
+- (CVReturn) getFrameForTime:(const CVTimeStamp*)outputTime;
+- (void)drawRect:(NSRect)dirtyRect;
+- (void*)bitmapData;
+@end
+
+static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink, 
+				    const CVTimeStamp* now, 
+				    const CVTimeStamp* outputTime, 
+				    CVOptionFlags flagsIn, 
+				    CVOptionFlags* flagsOut, 
+				    void* displayLinkContext)
+{
+    CVReturn result = [(__bridge HandmadeView*)displayLinkContext getFrameForTime:outputTime];
+    NSLog(@"callback");
+    return result;
+}
+
+@implementation HandmadeView
+
+- (instancetype)initWithFrame:(NSRect)frameRect {
+    NSLog(@"initWithFrame");
+    // setup pixel format
+    NSOpenGLPixelFormatAttribute attribs[] = {
+#if 0	
+	NSOpenGLPFAOpenGLProfile, NSOpenGLProfileVersion3_2Core,
+	NSOpenGLPFAAccelerated,
+	NSOpenGLPFADoubleBuffer,
+	NSOpenGLPFADepthSize, 24,
+	NSOpenGLPFAAlphaSize, 8,
+	NSOpenGLPFAColorSize, 24,
+	NSOpenGLPFADepthSize, 24,
+	NSOpenGLPFANoRecovery,
+	kCGLPFASampleBuffers, 1,
+	kCGLPFASamples, 1,
+	0
+#endif
+	NSOpenGLPFAAccelerated,
+        NSOpenGLPFANoRecovery,
+        NSOpenGLPFADoubleBuffer,
+        NSOpenGLPFAOpenGLProfile, NSOpenGLProfileVersion3_2Core,
+        0
+    };
+    
+    NSOpenGLPixelFormat *fmt = [[NSOpenGLPixelFormat alloc]
+				       initWithAttributes: attribs];
+    
+    self = [super initWithFrame: frameRect pixelFormat:fmt];
+    
+    
+    if (self) {
+	_renderBufferWidth = 1280;
+	_renderBufferHeight = 720;
+	int rowBytes = 4 * _renderBufferWidth;
+	_dataPtr = calloc(1, rowBytes * _renderBufferHeight);
+    }
+       
+    return self;
+}
+
+#define BUFFER_OFFSET(i) ((char *)NULL + (i))
+- (void)prepareOpenGL
+{
+    NSLog(@"Preparing opengl");
+    [super prepareOpenGL];
+    [[self openGLContext] makeCurrentContext];
+    [[self window] makeKeyAndOrderFront: self];
+    
+    GLint swapInt = 1;
+    [[self openGLContext] setValues:&swapInt forParameter:NSOpenGLCPSwapInterval];
+
+    // Create a texture object
+    glGenTextures(1, &_tex);
+    glBindTexture(GL_TEXTURE_2D, _tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, _renderBufferWidth, _renderBufferHeight,
+		 0, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, NULL);
+    
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    //glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE /*GL_MODULATE*/);    
+    
+
+    
+    
+    // Create opengl objects
+    // fullscreen quad using two triangles
+    glGenVertexArrays(1, &_vao);
+    glBindVertexArray(_vao);
+
+    glGenBuffers(1, &_vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, _vbo);
+    PrintOpenGLError();
+    // define data and upload (interleaved x,y,z,s,t
+    // A-D
+    // |\|
+    // B-C
+     
+    GLfloat vertices[] = {
+	-1,  1, 0, 0, 1, // A
+	-1, -1, 0, 0, 0, // B
+	1,  -1, 0, 1, 0, // C
+
+	-1,  1, 0, 0, 1, // A
+	1,  -1, 0, 1, 0, // C
+	1,  1,  0, 1, 1 //  D 
+    };
+    size_t bytes = sizeof(GLfloat) * 6 *5;
+
+    // upload data
+    glBufferData(GL_ARRAY_BUFFER, bytes, vertices, GL_STATIC_DRAW);
+    // specify vertex format
+    glEnableVertexAttribArray(2);
+    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(float)*5, BUFFER_OFFSET(0));
+
+    glEnableVertexAttribArray(3);
+    glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, sizeof(float)*5, BUFFER_OFFSET(12));
+    PrintOpenGLError();
+    // Shader source
+    static const char* vertexShaderString =
+	"#version 330 core\n"
+	"layout (location = 2) in vec3 position;\n"
+	"layout (location = 3) in vec2 texcoord;\n"
+	"out vec2 v_texcoord;\n"
+	"void main(void) {\n"
+	"	gl_Position  = vec4(position, 1.0);\n"
+	"       v_texcoord = texcoord;\n"
+	"}\n";
+
+    static const char* fragmentShaderString =
+	"#version 330 core\n"
+	"layout (location = 0) out vec4 outColor0;\n"
+	"uniform sampler2D tex0;\n"
+	"in vec2 v_texcoord;\n "
+	"void main(void)\n"
+	"{\n"
+	"        vec4 texel = texture(tex0, v_texcoord.st);\n"
+	"        outColor0 = texel;\n"
+	"}\n";
+    
+    // Create the shader
+    GLuint program, vertex, fragment;
+    program = glCreateProgram();
+    vertex = glCreateShader(GL_VERTEX_SHADER);
+    fragment = glCreateShader(GL_FRAGMENT_SHADER);
+    GLint logLength;
+    GLint status;	
+    PrintOpenGLError();
+    glShaderSource(vertex, 1, (const GLchar **)&vertexShaderString, NULL);
+    glCompileShader(vertex);
+	
+    glGetShaderiv(vertex, GL_INFO_LOG_LENGTH, &logLength);
+    if (logLength > 0)
+    {
+	GLchar *log = (GLchar *)malloc(logLength);
+	glGetShaderInfoLog(vertex, logLength, &logLength, log);
+	printf("VertexShader compile log:\n%s\n", log);
+	free(log);
+    }
+    glGetShaderiv(vertex, GL_COMPILE_STATUS, &status);
+    
+    if (status == 0)
+    {
+	glDeleteShader(vertex);
+	NSLog(@"vertex shgader compile failed\n");
+    }
+	
+    glShaderSource(fragment, 1, (const GLchar **)&fragmentShaderString, NULL);
+    glCompileShader(fragment);
+	    
+    glGetShaderiv(fragment, GL_INFO_LOG_LENGTH, &logLength);
+    if (logLength > 0)
+    {
+	GLchar *log = (GLchar *)malloc(logLength);
+	glGetShaderInfoLog(fragment, logLength, &logLength, log);
+	printf("FragmentShader compile log:\n%s\n", log);
+	free(log);
+    }
+    
+    glGetShaderiv(fragment, GL_COMPILE_STATUS, &status);
+    
+    if (status == 0)
+    {
+	glDeleteShader(fragment);
+	NSLog(@"fragmetb shgader compile failed\n");
+    }
+	
+    // Attach vertex shader to program
+    glAttachShader(program, vertex);
+    
+    // Attach fragment shader to program
+    glAttachShader(program, fragment);
+
+    
+    glLinkProgram(program);
+	
+    glGetProgramiv(program, GL_INFO_LOG_LENGTH, &logLength);
+    if (logLength > 0)
+    {
+	GLchar *log = (GLchar *)malloc(logLength);
+	glGetProgramInfoLog(program, logLength, &logLength, log);
+	printf("Program link log:\n%s\n", log);
+        
+	free(log);
+    }
+    glGetProgramiv(program, GL_LINK_STATUS, &status);
+    if (status == 0) {
+	NSLog(@"fragmetb shgader compile failed\n");
+    }
+    _program = program;
+    PrintOpenGLError();
+    
+    
+    // Display link
+    CVDisplayLinkCreateWithActiveCGDisplays(&_displayLink);
+    CVDisplayLinkSetOutputCallback(_displayLink, &DisplayLinkCallback, (__bridge void *)(self));
+
+    CGLContextObj cglContext = [[self openGLContext] CGLContextObj];
+    CGLPixelFormatObj cglPixelFormat = [[self pixelFormat] CGLPixelFormatObj];
+    CVDisplayLinkSetCurrentCGDisplayFromOpenGLContext(_displayLink, cglContext, cglPixelFormat);
+    CVDisplayLinkStart(_displayLink);
+}
+- (CVReturn) getFrameForTime:(const CVTimeStamp*)outputTime
+{
+    NSLog(@"getFrameForTImel");
+    @autoreleasepool
+    {
+	
+	[self drawRect: [self bounds]];
+    }
+    
+    return kCVReturnSuccess;
+}
+- (void*)bitmapData {
+    return _dataPtr;
+}
+
+- (void)drawRect:(NSRect)rect {
+
+    NSLog(@"drawing");
+    CGLLockContext([[self openGLContext] CGLContextObj]);
+     [self reshape];
+    
+    // Update the buffer
+    static int xOffset = 100;
+    xOffset++;
+    printf("x: %d\n", xOffset);
+    uint32_t *bitmap = (uint32_t*)([s_view bitmapData]);
+    int width = _renderBufferWidth,
+	height = _renderBufferHeight;
+    
+    for (int y=0; y < height; ++y) {
+	for (int x=0; x < width; ++x) {
+	    uint8_t blue = x + xOffset;
+	    uint8_t green = y;
+	    *bitmap++ = ((green << 16) | blue << 8);
+	}
+	
+    }
+    
+
+
+    // copy into texture
+    [[self openGLContext] makeCurrentContext];
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, _tex);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, _renderBufferWidth, _renderBufferHeight,
+		    GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, _dataPtr);
+
+    
+    glClearColor(0.2, 0.22 ,0.20, 1);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    glDisable(GL_DEPTH_TEST);
+    glViewport(0, 0, rect.size.width, rect.size.height);
+    glUniform1i(glGetUniformLocation(_program, "tex0"), 0);
+    glUseProgram(_program);
+    glBindVertexArray(_vao);
+
+    glBindBuffer(GL_ARRAY_BUFFER, _vbo);
+    
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    PrintOpenGLError();
+    CGLFlushDrawable([[self openGLContext] CGLContextObj]);
+    CGLUnlockContext([[self openGLContext] CGLContextObj]);
+ }
+@end
+
+
+// AppDelegate
 @interface AppDelegate : NSObject <NSApplicationDelegate>
 @property (nonatomic, retain) IBOutlet NSWindow *window;
 @end
@@ -37,21 +380,16 @@ static NSWindow* s_window;
 @synthesize window;
 
 - (void)applicationDidFinishLaunching:(NSNotification *)aNotification{
+
+    // Get a pointer the window (it is defined in the NIB)
+    // Create a View for drawing graphics
     NSLog(@"applicationDidFinishLaunching");
-   
     if (window)
     {
-	NSLog(@"We also have a window");
-    }
-    s_window = window;// [windows objectAtIndex: 0];
-
-    if (s_window ) {
-	NSLog(@"got window!");
-	NSRect rect = [[s_window contentView] bounds];
-	HHView *mainView = [[HHView alloc] initWithFrame:rect];
-	[s_window setContentView: mainView];
-    }else {
-	NSLog(@"no windows");
+	s_window = window;
+	NSRect frame = [[s_window contentView] bounds];
+	s_view = [[HandmadeView alloc] initWithFrame: frame];
+	[s_window setContentView: s_view];
     }
 }
 
@@ -66,154 +404,14 @@ static NSWindow* s_window;
     NSLog(@"applicationShouldTerminateAfterLastWindowClosed");
     return YES;
 }
-
-
-
 @end
 
-// simple view from zenmumbler
-@interface HHView : NSView {
-	void* dataPtr_;
-	CGContextRef backBuffer_;
-}
-- (instancetype)initWithFrame:(NSRect)frameRect;
-- (void)drawRect:(NSRect)dirtyRect;
-- (void*)bitmapData;
-@end
-@implementation HHView
 
-- (instancetype)initWithFrame:(NSRect)frameRect {
-	self = [super initWithFrame: frameRect];
-	if (self) {
-		int width = frameRect.size.width;
-		int height = frameRect.size.height;
-		int rowBytes = 4 * width;
-		dataPtr_ = calloc(1, rowBytes * height); // calloc clears memory upon first touch
-		
-		CMProfileRef prof; // these 2 calls are deprecated as of 10.6, but still work and I can't find their modern equivalent.
-		CMGetSystemProfile(&prof);
-		CGColorSpaceRef colorSpace = CGColorSpaceCreateWithPlatformColorSpace(prof);
-		
-		backBuffer_ = CGBitmapContextCreate(dataPtr_, width, height, 8, rowBytes, colorSpace, kCGImageAlphaNoneSkipLast | kCGBitmapByteOrderDefault);
-		CGColorSpaceRelease(colorSpace);
-		CMCloseProfile(prof);
-	}
-	return self;
-}
+// Entry
 
-- (void*)bitmapData {
-	return dataPtr_;
-}
-
-- (void)drawRect:(NSRect)dirtyRect {
-	CGContextRef ctx = [[NSGraphicsContext currentContext] CGContext];
-	CGImageRef backImage = CGBitmapContextCreateImage(backBuffer_);
-	CGContextDrawImage(ctx, self.frame, backImage);
-	CGImageRelease(backImage);
-}
-@end
-
-@interface HandmadeApplication : NSApplication
-{
-    bool _shouldKeepRunning;
-}
-- (void) run;
-- (void) terminate:(id)sender;
-@end
-
-@implementation HandmadeApplication
-
-- (void)run
-{
-    NSLog(@"Calling run 1");
-    
-    [[NSNotificationCenter defaultCenter]
-		postNotificationName:NSApplicationWillFinishLaunchingNotification
-			      object:NSApp];
-    [[NSNotificationCenter defaultCenter]
-		postNotificationName:NSApplicationDidFinishLaunchingNotification
-			      object:NSApp];
-    NSLog(@"Calling run 2");
-    _shouldKeepRunning = YES;
-    do
-    {
-	NSEvent *event =
-	    
-	    [self nextEventMatchingMask:NSAnyEventMask
-			      untilDate:[NSDate distantFuture]
-				 inMode:NSDefaultRunLoopMode
-				dequeue:YES];
-	
-	[self sendEvent:event];
-	[self updateWindows];
-    } while (_shouldKeepRunning);
-
-    [[NSNotificationCenter defaultCenter]
-		postNotificationName:NSApplicationWillTerminateNotification
-			      object:NSApp];
-    
-}
-
-- (void)terminate:(id)senderframe
-{
-    NSLog(@"got termninte");
-    _shouldKeepRunning = NO;
-}
-
-@end
-static NSArray* s_nibObjects;
-int HandmadeApplicationMain(int argc, const char **argv)
-{
-    NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
-
-    // get the plist
-    NSDictionary *infoDictionary = [[NSBundle mainBundle] infoDictionary];
-    // Find principal class (HandmadeApplication)
-    Class principalClass =
-	NSClassFromString([infoDictionary objectForKey:@"NSPrincipalClass"]);
-    NSApplication *applicationObject = [principalClass sharedApplication];
-
-    AppDelegate *appDelegate = [applicationObject delegate];
-    NSString *mainNibName = [infoDictionary objectForKey:@"NSMainNibFile"];
-    [[NSBundle mainBundle] loadNibNamed: mainNibName owner:appDelegate topLevelObjects: &s_nibObjects];
-//    NSNib *mainNib = [[NSNib alloc] initWithNibNamed:mainNibName bundle:[NSBundle mainBundle]];
-    NSLog([principalClass description]);
-    NSLog(@"Main nib name");
-    NSLog(mainNibName);
-    // NOTE: top level objects need to be retained or they will be deallocated
-
-
-    if(applicationObject)
-    {
-	NSLog(@"Got valid app");
-    }
-    
-    // [mainNib instantiateWithOwner:applicationObject topLevelObjects:&s_nibObjects];
-    NSLog(@"HandmadeApplicationMain");
-
-    // get frame from window
-   
-    
-    if ([applicationObject respondsToSelector:@selector(run)])
-    {
-	[applicationObject
-			performSelectorOnMainThread:@selector(run)
-					 withObject:nil
-				      waitUntilDone:YES];
-    }
-    NSLog(@"HandmadeApplicationMain after run");
-    //[mainNib release];
-    [pool release];
-	
-    return 0;
-}
-
-
-
-// Entry point
-// NOTE(filip): See cocoa with love for example of this 
 int main(int argc, const char * argv[]) {
-    return HandmadeApplicationMain(argc, argv);
+    NSLog(@"Starting");
+    return NSApplicationMain(argc, argv);
 }
 
 
