@@ -17,6 +17,55 @@ static HandmadeView *s_view;
 // - principal class "NSApplication"
 // 
 
+const char* GetErrorString(GLenum errorCode)
+{
+    static const struct {
+        GLenum code;
+        const char *string;
+    } errors[]=
+    {
+        /* GL */
+        {GL_NO_ERROR, "no error"},
+        {GL_INVALID_ENUM, "invalid enumerant"},
+        {GL_INVALID_VALUE, "invalid value"},
+        {GL_INVALID_OPERATION, "invalid operation"},
+//        {GL_STACK_OVERFLOW, "stack overflow"},
+//        {GL_STACK_UNDERFLOW, "stack underflow"},
+        {GL_OUT_OF_MEMORY, "out of memory"},
+
+        {0, NULL }
+    };
+
+    int i;
+
+    for (i=0; errors[i].string; i++)
+    {
+        if (errors[i].code == errorCode)
+        {
+            return errors[i].string;
+        }
+     }
+
+    return NULL;
+}
+int PrintOglError(char *file, int line)
+{
+
+    GLenum glErr;
+    int    retCode = 0;
+
+    glErr = glGetError();
+    if (glErr != GL_NO_ERROR)
+    {
+        printf("glError in file %s @ line %d: %s\n",
+			     file, line, GetErrorString(glErr));
+        retCode = 1;
+    }
+    return retCode;
+}
+#define PrintOpenGLError() PrintOglError(__FILE__, __LINE__)
+
+
 // View
 
 @interface HandmadeView : NSOpenGLView {
@@ -29,6 +78,7 @@ static HandmadeView *s_view;
     GLuint _program;
     
 }
+
 - (instancetype)initWithFrame:(NSRect)frameRect;
 - (CVReturn) getFrameForTime:(const CVTimeStamp*)outputTime;
 - (void)drawRect:(NSRect)dirtyRect;
@@ -53,24 +103,31 @@ static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink,
     NSLog(@"initWithFrame");
     // setup pixel format
     NSOpenGLPixelFormatAttribute attribs[] = {
+#if 0	
 	NSOpenGLPFAOpenGLProfile, NSOpenGLProfileVersion3_2Core,
 	NSOpenGLPFAAccelerated,
 	NSOpenGLPFADoubleBuffer,
 	NSOpenGLPFADepthSize, 24,
 	NSOpenGLPFAAlphaSize, 8,
-	NSOpenGLPFAColorSize, 32,
+	NSOpenGLPFAColorSize, 24,
 	NSOpenGLPFADepthSize, 24,
 	NSOpenGLPFANoRecovery,
 	kCGLPFASampleBuffers, 1,
 	kCGLPFASamples, 1,
 	0
+#endif
+	NSOpenGLPFAAccelerated,
+        NSOpenGLPFANoRecovery,
+        NSOpenGLPFADoubleBuffer,
+        NSOpenGLPFAOpenGLProfile, NSOpenGLProfileVersion3_2Core,
+        0
     };
     
     NSOpenGLPixelFormat *fmt = [[NSOpenGLPixelFormat alloc]
 				       initWithAttributes: attribs];
     
     self = [super initWithFrame: frameRect pixelFormat:fmt];
-
+    
     
     if (self) {
 	int width = frameRect.size.width;
@@ -100,7 +157,7 @@ static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink,
 
     glGenBuffers(1, &_vbo);
     glBindBuffer(GL_ARRAY_BUFFER, _vbo);
-    
+    PrintOpenGLError();
     // define data and upload (interleaved x,y,z,s,t
     // A-D
     // |\|
@@ -117,20 +174,20 @@ static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink,
     };
     size_t bytes = sizeof(GLfloat) * 6 *5;
 
-    // uploade data
+    // upload data
     glBufferData(GL_ARRAY_BUFFER, bytes, vertices, GL_STATIC_DRAW);
     // specify vertex format
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(float)*5, BUFFER_OFFSET(0));
+    glEnableVertexAttribArray(2);
+    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(float)*5, BUFFER_OFFSET(0));
 
-    glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, sizeof(float)*5, BUFFER_OFFSET(12));
-
+    glEnableVertexAttribArray(3);
+    glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, sizeof(float)*5, BUFFER_OFFSET(12));
+    PrintOpenGLError();
     // Shader source
     static const char* vertexShaderString =
 	"#version 330 core\n"
-	"layout (location = 0) in vec3 position;\n"
-	"layout (location = 1) in vec2 texcoord;\n"
+	"layout (location = 2) in vec3 position;\n"
+	"layout (location = 3) in vec2 texcoord;\n"
 	"out vec2 v_texcoord;\n"
 	"void main(void) {\n"
 	"	gl_Position  = vec4(position, 1.0);\n"
@@ -155,69 +212,72 @@ static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink,
     fragment = glCreateShader(GL_FRAGMENT_SHADER);
     GLint logLength;
     GLint status;	
-
+    PrintOpenGLError();
     glShaderSource(vertex, 1, (const GLchar **)&vertexShaderString, NULL);
-	glCompileShader(vertex);
+    glCompileShader(vertex);
 	
-	glGetShaderiv(vertex, GL_INFO_LOG_LENGTH, &logLength);
-	if (logLength > 0)
-	{
-		GLchar *log = (GLchar *)malloc(logLength);
-		glGetShaderInfoLog(vertex, logLength, &logLength, log);
-		printf("VertexShader compile log:\n%s\n", log);
-		free(log);
-	}
-	glGetShaderiv(vertex, GL_COMPILE_STATUS, &status);
+    glGetShaderiv(vertex, GL_INFO_LOG_LENGTH, &logLength);
+    if (logLength > 0)
+    {
+	GLchar *log = (GLchar *)malloc(logLength);
+	glGetShaderInfoLog(vertex, logLength, &logLength, log);
+	printf("VertexShader compile log:\n%s\n", log);
+	free(log);
+    }
+    glGetShaderiv(vertex, GL_COMPILE_STATUS, &status);
     
-	if (status == 0)
-	{
-	    glDeleteShader(vertex);
-	    NSLog(@"vertex shgader compile failed\n");
-	}
+    if (status == 0)
+    {
+	glDeleteShader(vertex);
+	NSLog(@"vertex shgader compile failed\n");
+    }
 	
-	glShaderSource(fragment, 1, (const GLchar **)&fragmentShaderString, NULL);
-	glCompileShader(fragment);
+    glShaderSource(fragment, 1, (const GLchar **)&fragmentShaderString, NULL);
+    glCompileShader(fragment);
 	    
-	glGetShaderiv(fragment, GL_INFO_LOG_LENGTH, &logLength);
-	if (logLength > 0)
-	{
-		GLchar *log = (GLchar *)malloc(logLength);
-		glGetShaderInfoLog(fragment, logLength, &logLength, log);
-		printf("FragmentShader compile log:\n%s\n", log);
-		free(log);
-	}
+    glGetShaderiv(fragment, GL_INFO_LOG_LENGTH, &logLength);
+    if (logLength > 0)
+    {
+	GLchar *log = (GLchar *)malloc(logLength);
+	glGetShaderInfoLog(fragment, logLength, &logLength, log);
+	printf("FragmentShader compile log:\n%s\n", log);
+	free(log);
+    }
     
-	glGetShaderiv(fragment, GL_COMPILE_STATUS, &status);
+    glGetShaderiv(fragment, GL_COMPILE_STATUS, &status);
     
-	if (status == 0)
-	{
-		glDeleteShader(fragment);
-		NSLog(@"fragmetb shgader compile failed\n");
-	}
+    if (status == 0)
+    {
+	glDeleteShader(fragment);
+	NSLog(@"fragmetb shgader compile failed\n");
+    }
 	
-	// Attach vertex shader to program
-	glAttachShader(program, vertex);
+    // Attach vertex shader to program
+    glAttachShader(program, vertex);
     
-	// Attach fragment shader to program
-	glAttachShader(program, fragment);
+    // Attach fragment shader to program
+    glAttachShader(program, fragment);
+
+    
+    glLinkProgram(program);
 	
-	glLinkProgram(program);
-	
-	glGetProgramiv(program, GL_INFO_LOG_LENGTH, &logLength);
-	if (logLength > 0)
-	{
-		GLchar *log = (GLchar *)malloc(logLength);
-		glGetProgramInfoLog(program, logLength, &logLength, log);
-		printf("Program link log:\n%s\n", log);
+    glGetProgramiv(program, GL_INFO_LOG_LENGTH, &logLength);
+    if (logLength > 0)
+    {
+	GLchar *log = (GLchar *)malloc(logLength);
+	glGetProgramInfoLog(program, logLength, &logLength, log);
+	printf("Program link log:\n%s\n", log);
         
-		free(log);
-	}
-	glGetProgramiv(program, GL_LINK_STATUS, &status);
-	if (status == 0) {
-	    NSLog(@"fragmetb shgader compile failed\n");
-	}
-	_program = program;
-	
+	free(log);
+    }
+    glGetProgramiv(program, GL_LINK_STATUS, &status);
+    if (status == 0) {
+	NSLog(@"fragmetb shgader compile failed\n");
+    }
+    _program = program;
+    PrintOpenGLError();
+    
+    
     // Display link
     CVDisplayLinkCreateWithActiveCGDisplays(&_displayLink);
     CVDisplayLinkSetOutputCallback(_displayLink, &DisplayLinkCallback, (__bridge void *)(self));
@@ -232,7 +292,8 @@ static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink,
     NSLog(@"getFrameForTImel");
     @autoreleasepool
     {
-	[self drawRect: NSZeroRect];
+	
+	[self drawRect: [self bounds]];
     }
     
     return kCVReturnSuccess;
@@ -245,6 +306,7 @@ static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink,
 
     NSLog(@"drawing");
     CGLLockContext([[self openGLContext] CGLContextObj]);
+     [self reshape];
     
     // Update the buffer
     /*static int xOffset = 100;
@@ -275,10 +337,11 @@ static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink,
     glViewport(0, 0, rect.size.width, rect.size.height);
     glUseProgram(_program);
     glBindVertexArray(_vao);
+
     glBindBuffer(GL_ARRAY_BUFFER, _vbo);
     
     glDrawArrays(GL_TRIANGLES, 0, 6);
-        
+    PrintOpenGLError();
     CGLFlushDrawable([[self openGLContext] CGLContextObj]);
     CGLUnlockContext([[self openGLContext] CGLContextObj]);
  }
