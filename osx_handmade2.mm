@@ -71,6 +71,8 @@ int PrintOglError(char *file, int line)
 @interface HandmadeView : NSOpenGLView {
     CVDisplayLinkRef        _displayLink;
     void *                  _dataPtr;
+    uint32_t   _renderBufferWidth;
+    uint32_t   _renderBufferHeight;
 
     GLuint _vao;
     GLuint _vbo;
@@ -130,10 +132,10 @@ static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink,
     
     
     if (self) {
-	int width = frameRect.size.width;
-	int height = frameRect.size.height;
-	int rowBytes = 4 * width;
-	_dataPtr = calloc(1, rowBytes * height); // calloc clears memory upon first touch	
+	_renderBufferWidth = 1280;
+	_renderBufferHeight = 720;
+	int rowBytes = 4 * _renderBufferWidth;
+	_dataPtr = calloc(1, rowBytes * _renderBufferHeight);
     }
        
     return self;
@@ -150,6 +152,19 @@ static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink,
     GLint swapInt = 1;
     [[self openGLContext] setValues:&swapInt forParameter:NSOpenGLCPSwapInterval];
 
+    // Create a texture object
+    glGenTextures(1, &_tex);
+    glBindTexture(GL_TEXTURE_2D, _tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, _renderBufferWidth, _renderBufferHeight,
+		 0, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, NULL);
+    
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    //glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE /*GL_MODULATE*/);    
+    
+
+    
+    
     // Create opengl objects
     // fullscreen quad using two triangles
     glGenVertexArrays(1, &_vao);
@@ -197,12 +212,12 @@ static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink,
     static const char* fragmentShaderString =
 	"#version 330 core\n"
 	"layout (location = 0) out vec4 outColor0;\n"
-	"uniform sampler2D texture0;\n"
+	"uniform sampler2D tex0;\n"
 	"in vec2 v_texcoord;\n "
 	"void main(void)\n"
 	"{\n"
-	"        vec4 texel = texture(texture0, v_texcoord.st);\n"
-	"        outColor0 = vec4(1.0, 1.0, 0.0, 1.0);//texel;\n"
+	"        vec4 texel = texture(tex0, v_texcoord.st);\n"
+	"        outColor0 = texel;\n"
 	"}\n";
     
     // Create the shader
@@ -309,12 +324,12 @@ static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink,
      [self reshape];
     
     // Update the buffer
-    /*static int xOffset = 100;
+    static int xOffset = 100;
     xOffset++;
     printf("x: %d\n", xOffset);
     uint32_t *bitmap = (uint32_t*)([s_view bitmapData]);
-    int width = [s_view frame].size.width,
-	height = [s_view frame].size.height;
+    int width = _renderBufferWidth,
+	height = _renderBufferHeight;
     
     for (int y=0; y < height; ++y) {
 	for (int x=0; x < width; ++x) {
@@ -324,17 +339,24 @@ static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink,
 	}
 	
     }
-    */
+    
 
 
     // copy into texture
     [[self openGLContext] makeCurrentContext];
 
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, _tex);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, _renderBufferWidth, _renderBufferHeight,
+		    GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, _dataPtr);
+
+    
     glClearColor(0.2, 0.22 ,0.20, 1);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     glDisable(GL_DEPTH_TEST);
     glViewport(0, 0, rect.size.width, rect.size.height);
+    glUniform1i(glGetUniformLocation(_program, "tex0"), 0);
     glUseProgram(_program);
     glBindVertexArray(_vao);
 
