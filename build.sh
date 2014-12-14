@@ -2,6 +2,8 @@
 # public domain (by filip wanstrom)
 # Setup basic folder / app bundle structure
 ./makebundle.sh build/Handmade
+./makexcscheme.sh build/Handmade.app osx_support_files/DebugHandmadeHybrid/DebugHandmadeHybrid.xcodeproj/xcshareddata/xcschemes/RunDebug.xcscheme
+
 
 # compile the window/view description file to a archieved object
 ibtool --compile build/MainMenu.nib osx_support_files/MainMenu.xib
