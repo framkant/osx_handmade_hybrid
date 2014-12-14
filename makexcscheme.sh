@@ -10,10 +10,18 @@ exeName="$1"
 schemeLocation="$2"
 
 cwd=${PWD}  
+echo "CWD: ${cwd}"
 absPath="${cwd}/${exeName}"
-#echo "path: ${absPath}"
+echo "abs path: ${absPath}"
+dirPath=${schemeLocation%/*}
+echo "schemeLocation dir path: ${dirPath}"
 
-cat>"${schemeLocation}"<<EOF
+
+if [ ! -d "${dirPath}" ]; then
+  mkdir -p "{dirPath}"
+fi
+
+cat > "${schemeLocation}" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <Scheme
    LastUpgradeVersion = "0610"
