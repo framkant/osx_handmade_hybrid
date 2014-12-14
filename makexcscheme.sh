@@ -16,9 +16,8 @@ echo "abs path: ${absPath}"
 dirPath=${schemeLocation%/*}
 echo "schemeLocation dir path: ${dirPath}"
 
-
 if [ ! -d "${dirPath}" ]; then
-  mkdir -p "{dirPath}"
+  mkdir -p "${dirPath}"
 fi
 
 cat > "${schemeLocation}" <<EOF
