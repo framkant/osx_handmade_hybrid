@@ -8,6 +8,8 @@
 
 /* Begin PBXFileReference section */
 		DC8C5AFC1A3DA03400701EF7 /* osx_handmade.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; name = osx_handmade.mm; path = ../../osx_handmade.mm; sourceTree = "<group>"; };
+		DCE3E6DD1A420441001FC368 /* handmade.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = handmade.cpp; path = ../../handmade.cpp; sourceTree = "<group>"; };
+		DCE3E6DE1A420441001FC368 /* handmade.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = handmade.h; path = ../../handmade.h; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -15,6 +17,8 @@
 			isa = PBXGroup;
 			children = (
 				DC8C5AFC1A3DA03400701EF7 /* osx_handmade.mm */,
+				DCE3E6DD1A420441001FC368 /* handmade.cpp */,
+				DCE3E6DE1A420441001FC368 /* handmade.h */,
 			);
 			sourceTree = "<group>";
 		};

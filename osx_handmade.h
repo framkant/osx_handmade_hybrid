@@ -28,6 +28,7 @@ struct osx_sound_output
 
 struct osx_game_code
 {
+    char  DylibName[512];
     void* Lib;
     time_t LastModified;
     game_update_and_render *UpdateAndRender;

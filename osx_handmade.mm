@@ -89,18 +89,72 @@ static HandmadeView *s_view;
 
 #include "osx_handmade.h"
 
+time_t OSXGetModTime(const char* filename)
+{
+    struct stat file_stat;
+    stat(filename, &file_stat);
+    return file_stat.st_mtime;
+}
+
+// Dynamic loading and unloading of code
+internal  
 osx_game_code OSXLoadGameCode(char * dylibname)
 {
     osx_game_code ret;
-    void* lib = dlopen(dylibname, RTLD_LAZY);
+    void* lib = dlopen(dylibname, RTLD_NOW);
+
     ret.Lib = lib;
     void *f1 = dlsym(lib, "GameUpdateAndRender");    
-    void *f2 = dlsym(lib, "GAME_GET_SOUND_SAMPLES");    
+    void *f2 = dlsym(lib, "GameGetSoundSamples");    
     ret.UpdateAndRender = (game_update_and_render *)f1;
     ret.GetSoundSamples = (game_get_sound_samples *)f2;
     ret.IsValid = true;
+    ret.LastModified = OSXGetModTime(dylibname);
+    strncpy(ret.DylibName, dylibname, 512);
     return ret;
 }
+internal
+void OSXUnloadGameCode(osx_game_code* GameCode)
+{
+    if(GameCode->Lib) {
+        GameCode->UpdateAndRender = GameUpdateAndRenderStub;
+        GameCode->GetSoundSamples = GameGetSoundSamplesStub;
+        int err = dlclose(GameCode->Lib);
+    }
+}
+internal
+void OSXReloadIfModified(osx_game_code *GameCode)
+{
+    if (GameCode)
+    {
+        time_t t = OSXGetModTime(GameCode->DylibName);
+        if(t>GameCode->LastModified) {
+            OSXUnloadGameCode(GameCode);
+            
+            // TODO(filip): why do a copy of the code work
+            // but not a function call?
+            
+            //*GameCode = OSXLoadGameCode(GameCode->DylibName);
+            
+            osx_game_code ret;
+            void* lib = dlopen(GameCode->DylibName, RTLD_NOW);
+
+            ret.Lib = lib;
+            void *f1 = dlsym(lib, "GameUpdateAndRender");    
+            void *f2 = dlsym(lib, "GameGetSoundSamples");    
+            ret.UpdateAndRender = (game_update_and_render *)f1;
+            ret.GetSoundSamples = (game_get_sound_samples *)f2;
+            ret.IsValid = true;
+            ret.LastModified = OSXGetModTime(GameCode->DylibName);
+            strncpy(ret.DylibName, GameCode->DylibName, 512);
+            *GameCode= ret;
+
+        }
+
+    }
+
+}
+
 
 
 
@@ -1089,7 +1143,7 @@ static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink,
 
     NewController->IsAnalog = true;
     NewController->StickAverageX = _hidX;
-    NewController->StickAverageX = _hidY;
+    NewController->StickAverageX = 2;//_hidY;
 
     NewController->MoveDown.EndedDown = _hidButtons[1];
     NewController->MoveUp.EndedDown = _hidButtons[2];
@@ -1121,8 +1175,11 @@ static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink,
     
     glDrawArrays(GL_TRIANGLES, 0, 6);
     PrintOpenGLError();
+    OSXReloadIfModified(&_gameCode);
     CGLFlushDrawable([[self openGLContext] CGLContextObj]);
     CGLUnlockContext([[self openGLContext] CGLContextObj]);
+
+
  }
 @end
 
