@@ -37,5 +37,18 @@ struct osx_game_code
     bool32 IsValid;
 };
 
+struct osx_state
+{
+    uint64 TotalSize;
+    void *GameMemoryBlock;
+    
+    FILE *RecordingHandle;
+    int InputRecordingIndex;
+
+    FILE *PlaybackHandle;
+    int InputPlayingIndex;  
+
+};
+
 #define OSX_HANDMADE_H
 #endif

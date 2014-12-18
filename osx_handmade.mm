@@ -120,6 +120,7 @@ void OSXUnloadGameCode(osx_game_code* GameCode)
         GameCode->UpdateAndRender = GameUpdateAndRenderStub;
         GameCode->GetSoundSamples = GameGetSoundSamplesStub;
         int err = dlclose(GameCode->Lib);
+        NOTUSED(err);
     }
 }
 internal
@@ -155,6 +156,78 @@ void OSXReloadIfModified(osx_game_code *GameCode)
 
 }
 
+// STATE REPLAY
+
+internal void
+OSXBeginRecordingInput(osx_state *OSXState, int InputRecordingIndex)
+{
+    OSXState->InputRecordingIndex = InputRecordingIndex;
+// TODO(casey): These files must go in a temporary/build directory!!!!
+// TODO(casey): Lazily write the giant memory block and use a memory copy instead?
+    
+    char *FileName = "foo.hmi";
+    OSXState->RecordingHandle = fopen(FileName, "w");
+
+    size_t BytesToWrite = (size_t)OSXState->TotalSize;
+    Assert(OSXState->TotalSize == BytesToWrite);
+    uint32_t ObjectsWritten;
+    ObjectsWritten = fwrite(OSXState->GameMemoryBlock, BytesToWrite, 1, OSXState->RecordingHandle);
+    fclose(OSXState->RecordingHandle);
+    OSXState->RecordingHandle = 0;
+    OSXState->RecordingHandle = fopen(FileName, "a");    
+
+}
+
+internal void
+OSXEndRecordingInput(osx_state *OSXState)
+{
+    fclose(OSXState->RecordingHandle);
+    OSXState->InputRecordingIndex = 0;
+}
+
+internal void
+OSXBeginInputPlayBack(osx_state *OSXState, int InputPlayingIndex)
+{
+    OSXState->InputPlayingIndex = InputPlayingIndex;
+    char *FileName = "foo.hmi";
+    OSXState->PlaybackHandle  = fopen(FileName, "r");
+    
+    size_t BytesToRead = (size_t)OSXState->TotalSize;
+    Assert(OSXState->TotalSize == BytesToRead);
+    uint32_t ObjectsRead;
+    ObjectsRead = fread(OSXState->GameMemoryBlock, BytesToRead, 1, OSXState->PlaybackHandle);        
+}
+
+internal void
+OSXEndInputPlayBack(osx_state *OSXState)
+{
+    fclose(OSXState->PlaybackHandle);
+    OSXState->InputPlayingIndex = 0;
+}
+
+internal void
+OSXRecordInput(osx_state *OSXState, game_input *NewInput)    
+{
+    uint32_t ObjectsWritten;
+    ObjectsWritten = fwrite(NewInput, sizeof(*NewInput), 1, OSXState->RecordingHandle);
+}
+
+internal void
+OSXPlayBackInput(osx_state *OSXState, game_input *NewInput)
+{
+
+    uint32_t ObjectsRead=0;
+    ObjectsRead = fread(NewInput, sizeof(*NewInput), 1, OSXState->PlaybackHandle);        
+    printf("read: %d\n", ObjectsRead);
+    if(ObjectsRead == 0){ // end of stream
+        printf("end of stream, restarting\n");
+        int PlayingIndex = OSXState->InputPlayingIndex;
+        OSXEndInputPlayBack(OSXState);
+        OSXBeginInputPlayBack(OSXState, PlayingIndex);
+        
+        ObjectsRead = fread(NewInput, sizeof(*NewInput), 1, OSXState->PlaybackHandle);
+    }
+}
 
 
 
@@ -270,11 +343,9 @@ void HIDElementAdd(HIDElements * elements, uint32_t key, HIDElement e)
   //  Assert(elements->numElements < MAX_NUM_HID_ELEMENTS);
     uint32_t index = elements->numElements;
     elements->elements[index] = e;
-    printf("hello 1\n");
     elements->keys[index] = key;
-    printf("hello 2\n");
     elements->numElements++;
-    printf("hello 3\n");
+    
 }
 HIDElement* HIDElementGet(HIDElements * elements, uint32_t key)
 {
@@ -302,12 +373,14 @@ HIDElement* HIDElementGet(HIDElements * elements, uint32_t key)
     game_offscreen_buffer       _renderBuffer;
     game_memory                 _gameMemory;
     osx_game_code               _gameCode;
+    osx_state                   _osxState;
 
     // input from callback
     int                         _hidX;
     int                         _hidY;
     uint8                       _hidButtons[MAX_HID_BUTTONS];
-
+    int                         _recordingOn;
+    int                         _dummy[1024];
 
     GLuint _vao; 
     GLuint _vbo;
@@ -675,6 +748,29 @@ static void OSXHIDValueChanged(
             case kHIDUsage_KeyboardRightArrow:
                 keyName = @"Right";
                 break;
+            case kHIDUsage_KeyboardL:
+            {
+                keyName = @"l";
+                if (elementValue == 1){
+                    if(view->_recordingOn == 0){ // turn on
+                        OSXBeginRecordingInput(&view->_osxState, 1);
+                        printf("starting recordning\n");
+                        view->_recordingOn = 1;
+                    }
+                    else // turn off
+                    {
+                        printf("ending recordning\n");
+                        OSXEndRecordingInput(&view->_osxState);
+                        OSXBeginInputPlayBack(&view->_osxState, 1);
+                        view->_recordingOn = 0;
+                    }
+
+                    
+                }
+                    
+            }
+                break;
+
 
             default:
                 return;
@@ -682,11 +778,15 @@ static void OSXHIDValueChanged(
         }
         if (elementValue == 1)
         {
-            NSLog(@"%@ pressed", keyName);
+            NSLog(@"%@ pressed (%d)", keyName, usage);
+            view->_dummy[usage] = 1;
+            
         }
         else if (elementValue == 0)
         {
             NSLog(@"%@ released", keyName);
+            view->_dummy[usage] = 0;
+            
         }
     }
     else if (usagePage == 9) // Buttons
@@ -917,10 +1017,40 @@ static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink,
 
     // TODO(casey): Handle various memory footprints (USING SYSTEM METRICS)
     uint64 TotalSize = _gameMemory.PermanentStorageSize + _gameMemory.TransientStorageSize;
+
+    // TODO:(filip): mac os x has a quite different mem system then windows
+    // this works for now, but needs to be investigated further
+    vm_address_t BaseAddress = Terabytes(4);
+
     kern_return_t result = vm_allocate((vm_map_t)mach_task_self(),
-                                       (vm_address_t*)&_gameMemory.PermanentStorage,
+                                       (vm_address_t*)&BaseAddress,
+                                       TotalSize,
+                                       VM_FLAGS_FIXED);
+
+
+    
+    /*vm_address_t BaseAddress;
+    vm_address_t BaseAddress2;
+    kern_return_t result = vm_allocate((vm_map_t)mach_task_self(),
+                                       (vm_address_t*)&BaseAddress,
                                        TotalSize,
                                        VM_FLAGS_ANYWHERE);
+
+    kern_return_t result2 = vm_allocate((vm_map_t)mach_task_self(),
+                                       (vm_address_t*)&BaseAddress2,
+                                       TotalSize,
+                                       VM_FLAGS_ANYWHERE);
+    
+    printf("allocated  2 at: %p\n", BaseAddress2 );
+    
+    */
+    _osxState.TotalSize = TotalSize;
+    _osxState.GameMemoryBlock = (void*)BaseAddress;
+
+
+    _gameMemory.PermanentStorage = _osxState.GameMemoryBlock ;
+    printf("allocated  1 at: %p\n", BaseAddress );
+    
     if (result != KERN_SUCCESS)
     {
         NSLog(@"Error allocating memory");
@@ -933,7 +1063,7 @@ static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink,
     // load game code
     const char *frameworksPath = [[[NSBundle mainBundle] privateFrameworksPath] UTF8String];
     char dylibpath[512];
-    snprintf(dylibpath, 512, "%s%s", frameworksPath, "\/handmade.dylib");
+    snprintf(dylibpath, 512, "%s%s", frameworksPath, "/handmade.dylib");
 
 
     _gameCode = OSXLoadGameCode(dylibpath);
@@ -1118,6 +1248,17 @@ static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink,
     return kCVReturnSuccess;
 }
 
+/*
+######  ######     #    #     # 
+#     # #     #   # #   #  #  # 
+#     # #     #  #   #  #  #  # 
+#     # ######  #     # #  #  # 
+#     # #   #   ####### #  #  # 
+#     # #    #  #     # #  #  # 
+######  #     # #     #  ## ##  
+                                
+*/ 
+
 
 - (void)drawRect:(NSRect)rect {
 
@@ -1131,7 +1272,8 @@ static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink,
     Buffer.Height = _renderBuffer.Height;
     Buffer.Pitch = _renderBuffer.Pitch; 
 
-// NOTE(jeff): Don't run the game logic during resize events
+    
+
 
     // TODO(jeff): Fix this for multiple controllers
     local_persist game_input Input[2] = {};
@@ -1142,13 +1284,26 @@ static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink,
     game_controller_input* NewController = &NewInput->Controllers[0];
 
     NewController->IsAnalog = true;
-    NewController->StickAverageX = _hidX;
-    NewController->StickAverageX = 2;//_hidY;
+    NewController->StickAverageX = _dummy[kHIDUsage_KeyboardRightArrow]*2 ;//_hidY;
+    NewController->StickAverageY =  _hidY;
 
     NewController->MoveDown.EndedDown = _hidButtons[1];
     NewController->MoveUp.EndedDown = _hidButtons[2];
     NewController->MoveLeft.EndedDown = _hidButtons[3];
     NewController->MoveRight.EndedDown = _hidButtons[4];
+
+
+    if(_osxState.InputRecordingIndex && _recordingOn)
+    {
+        OSXRecordInput(&_osxState, NewInput);
+        printf("recording\n");
+    }
+
+    if(_osxState.InputPlayingIndex && _recordingOn == 0)
+    {
+        OSXPlayBackInput(&_osxState, NewInput);
+        printf("playing back\n");
+    }
 
 
     _gameCode.UpdateAndRender(&_gameMemory, NewInput, &Buffer);
