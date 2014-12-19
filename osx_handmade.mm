@@ -1247,6 +1247,11 @@ static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink,
     
     return kCVReturnSuccess;
 }
+- (void) becomeKeyWindow
+{
+
+    [s_window setAlphaValue:1.0];
+}
 
 /*
 ######  ######     #    #     # 
@@ -1367,10 +1372,22 @@ static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink,
 	s_window = window;
 	NSRect frame = [[s_window contentView] bounds];
 	s_view = [[HandmadeView alloc] initWithFrame: frame];
-	[s_window setContentView: s_view];
+	[s_window setContentView:   s_view];
+    //[s_window orderFrontRegardless];
+    [window setLevel: NSStatusWindowLevel];
+    [window makeKeyAndOrderFront:self];
         // init joysticks etc
         OSXHIDSetup();
     }
+}
+- (void)applicationDidBecomeActive:(NSNotification *)aNotification {
+    [s_window setAlphaValue: 1.0];
+    [s_window setIgnoresMouseEvents: NO];
+}
+
+- (void)applicationDidResignActive:(NSNotification *)aNotification {
+    [s_window setAlphaValue: 0.3];
+    [s_window setIgnoresMouseEvents: YES];
 }
 
 - (void)applicationWillTerminate:(NSNotification *)aNotification {
