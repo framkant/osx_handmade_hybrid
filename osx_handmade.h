@@ -37,8 +37,16 @@ struct osx_game_code
     bool32 IsValid;
 };
 
+struct osx_replay_buffer {
+    char  FileName[512];
+    int   FileDescriptor;
+    void *MemoryBlock;
+};
+
 struct osx_state
-{
+{   
+    char  MainBundlePath[512];
+    osx_replay_buffer ReplayBuffers[4];
     uint64 TotalSize;
     void *GameMemoryBlock;
     
@@ -48,6 +56,7 @@ struct osx_state
     FILE *PlaybackHandle;
     int InputPlayingIndex;  
 
+    
 };
 
 #define OSX_HANDMADE_H

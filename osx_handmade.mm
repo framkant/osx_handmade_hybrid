@@ -1,3 +1,37 @@
+/*
+    Author: Filip Wanstrom (@filipwanstrom)
+    Latest change: 2014-12-21
+    
+    This is a WIP of a the Mac platform layer for Handmade Hero 
+    (handmadehero.org, a game development project by Casey Muratori)
+
+    This file will be marked "beta" when when it's good enough to use
+    Until then, consider this a educational or something :)
+
+    I have got a lot of inspiration, tips and help from the handmadehero 
+    forums. I want to mention Jeff Buck(@itfrombit) and Arthur Langereis 
+    (@zenmumbler) which have been especially engaged in the Mac port. 
+    Jeff has a more or less complete implementation at
+
+    I use code by my own research () except for the HID handling which is 
+    copied  more or less directly from @itfrombit (Jeff Buck).
+    This is mentioned in the code.
+
+    TODO(filip):
+    - AUDIO
+        - add something that works
+            - @zenmumbler and @itfrombit have working code
+    - INPUT
+        - handle gamepad like in win32
+            - save name of controller
+            - make difference between controllers (1-4)! 
+            - Couple input to the correct controller
+
+            - each up/down event = add to halftransition count
+            - record ended down
+
+        - handle keyboard just like gamepad
+*/
 
 #include <stdint.h>
 #include <math.h>
@@ -10,12 +44,11 @@
 #import <IOKit/usb/IOUSBLib.h>
 #include <mach/mach_time.h>
 
-
 // The game
 #include "handmade.h"
-
 #include "osx_handmade.h"
 
+// NOTE(filip): copied from jeff
 #ifndef HANDMADE_USE_ASM_RDTSC
 // NOTE(jeff): Thanks to @visitect for this suggestion
 #define rdtsc __builtin_readcyclecounter
@@ -52,22 +85,17 @@ rdtsc()
  #####  ####### ####### ######  #     # #######  #####  
 */                                                        
 
-
-
 @class HandmadeView;
 static NSWindow *s_window;
 static HandmadeView *s_view;
 
-// in NIB: "MainMenu" in file "Handmade.xib"
-// (that is converted to Handmade.nib using libtool and copied into bundle)
-// - window IBoutlet
-// - delegate IBoutlet
+// NSWindow IBoutlet called "window" and
+// NSApplicationDelegate IBoutlet called "delegate" are created by xcode
+// The XIB/NIB is called "MainMenu.xib"
 
-// In plist (that I create in makebudle script)
-// - menus
+// In the plist that I create in makebudle.sh script
+// I set the name of 
 // - principal class "NSApplication"
-// 
-
 
 /*
 ####### ### #       #######    ### ####### 
@@ -82,18 +110,27 @@ static HandmadeView *s_view;
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <sys/stat.h>   // fstat()
-#include <unistd.h>     // lseek()
+#include <sys/stat.h>   
+#include <unistd.h>     
 #include <fcntl.h>
 #include <dlfcn.h>
 
 #include "osx_handmade.h"
-
+/**************************************************************************************************/
 time_t OSXGetModTime(const char* filename)
 {
     struct stat file_stat;
     stat(filename, &file_stat);
     return file_stat.st_mtime;
+}
+
+void OSXGetInputFileLocation(osx_state *State, bool32 InputStream,
+                          int SlotIndex, char *Dest)
+{
+    sprintf(Dest, "%s/loop_edit_%d_%s.hmi",
+                State->MainBundlePath, 
+                SlotIndex,
+                InputStream? "input":"state" );
 }
 
 // Dynamic loading and unloading of code
@@ -117,8 +154,8 @@ internal
 void OSXUnloadGameCode(osx_game_code* GameCode)
 {
     if(GameCode->Lib) {
-        GameCode->UpdateAndRender = GameUpdateAndRenderStub;
-        GameCode->GetSoundSamples = GameGetSoundSamplesStub;
+        GameCode->UpdateAndRender = 0;
+        GameCode->GetSoundSamples = 0;
         int err = dlclose(GameCode->Lib);
         NOTUSED(err);
     }
@@ -157,25 +194,65 @@ void OSXReloadIfModified(osx_game_code *GameCode)
 }
 
 // STATE REPLAY
-
-internal void
-OSXBeginRecordingInput(osx_state *OSXState, int InputRecordingIndex)
+internal osx_replay_buffer *
+OSXGetReplayBuffer(osx_state *State, int unsigned Index)
 {
-    OSXState->InputRecordingIndex = InputRecordingIndex;
-// TODO(casey): These files must go in a temporary/build directory!!!!
-// TODO(casey): Lazily write the giant memory block and use a memory copy instead?
+    Assert(Index < ArrayCount(State->ReplayBuffers));
+    osx_replay_buffer *Result = &State->ReplayBuffers[Index];
+    return(Result);
+}
+internal void
+OSXBeginRecordingInput(osx_state *State, int InputRecordingIndex)
+{
+    osx_replay_buffer *ReplayBuffer = OSXGetReplayBuffer(State, InputRecordingIndex);
+
+    if (ReplayBuffer->MemoryBlock){
+        State->InputRecordingIndex = InputRecordingIndex;
+
+        char FileName[512];
+        OSXGetInputFileLocation(State, true, InputRecordingIndex, FileName);
+        State->RecordingHandle = fopen(FileName, "w");
+/*
+        int fd = PR_FileDesc2NativeHandle(aFD);
+     fstore_t store = {F_ALLOCATECONTIG, F_PEOFPOSMODE, 0, aLength};
+     // Try to get a continous chunk of disk space
+     int ret = fcntl(fd, F_PREALLOCATE, &store);
+    if(-1 == ret){
+       // OK, perhaps we are too fragmented, allocate non-continuous
+       store.fst_flags = F_ALLOCATEALL;
+       ret = fcntl(fd, F_PREALLOCATE, &store);
+       if (-1 == ret)
+         return false;
+     }
+
+*/        
+
+        fstore_t store = {F_ALLOCATECONTIG, F_PEOFPOSMODE, 0, State->TotalSize};
+        int fret = fcntl(ReplayBuffer->FileDescriptor, F_PREALLOCATE, &store);
+        if (fret == -1)
+        {
+            store.fst_flags = F_ALLOCATEALL;
+            fret = fcntl(ReplayBuffer->FileDescriptor, F_PREALLOCATE, &store);
+            if (-1 == fret){
+                printf("store error\n");    
+            }
+            
+        }        
+
+        //ftruncate(ReplayBuffer->FileDescriptor, State->TotalSize);
+        off_t ret2 = lseek(ReplayBuffer->FileDescriptor, State->TotalSize-1, SEEK_SET);
+        if (ret2 )
+        {
+            int ret = write(ReplayBuffer->FileDescriptor, "", 1);
+            printf("file resized\n");
+        }
+        memcpy(ReplayBuffer->MemoryBlock, State->GameMemoryBlock, State->TotalSize);
+        
+        State->RecordingHandle = 0;
+        State->RecordingHandle = fopen(FileName, "a");    
+    }
     
-    char *FileName = "foo.hmi";
-    OSXState->RecordingHandle = fopen(FileName, "w");
-
-    size_t BytesToWrite = (size_t)OSXState->TotalSize;
-    Assert(OSXState->TotalSize == BytesToWrite);
-    uint32_t ObjectsWritten;
-    ObjectsWritten = fwrite(OSXState->GameMemoryBlock, BytesToWrite, 1, OSXState->RecordingHandle);
-    fclose(OSXState->RecordingHandle);
-    OSXState->RecordingHandle = 0;
-    OSXState->RecordingHandle = fopen(FileName, "a");    
-
+    
 }
 
 internal void
@@ -186,22 +263,36 @@ OSXEndRecordingInput(osx_state *OSXState)
 }
 
 internal void
-OSXBeginInputPlayBack(osx_state *OSXState, int InputPlayingIndex)
+OSXBeginInputPlayBack(osx_state *State, int Index)
 {
+    osx_replay_buffer * ReplayBuffer = OSXGetReplayBuffer(State, Index);
+    if(ReplayBuffer->MemoryBlock) {
+        State->InputPlayingIndex = Index;
+
+        char FileName[512];
+        OSXGetInputFileLocation(State, true, Index, FileName);
+        State->PlaybackHandle = fopen(FileName, "r");
+
+        memcpy(State->GameMemoryBlock, ReplayBuffer->MemoryBlock, State->TotalSize);
+    }
+
+
+#if 0   
     OSXState->InputPlayingIndex = InputPlayingIndex;
-    char *FileName = "foo.hmi";
+    char *FileName = OSXState->FileName;
     OSXState->PlaybackHandle  = fopen(FileName, "r");
     
     size_t BytesToRead = (size_t)OSXState->TotalSize;
     Assert(OSXState->TotalSize == BytesToRead);
     uint32_t ObjectsRead;
     ObjectsRead = fread(OSXState->GameMemoryBlock, BytesToRead, 1, OSXState->PlaybackHandle);        
+#endif
 }
 
 internal void
 OSXEndInputPlayBack(osx_state *OSXState)
 {
-    fclose(OSXState->PlaybackHandle);
+    if(OSXState->PlaybackHandle)fclose(OSXState->PlaybackHandle);
     OSXState->InputPlayingIndex = 0;
 }
 
@@ -229,9 +320,7 @@ OSXPlayBackInput(osx_state *OSXState, game_input *NewInput)
     }
 }
 
-
-
-
+// NOTE(filip): this is copied from Jeff
 DEBUG_PLATFORM_FREE_FILE_MEMORY(DEBUGPlatformFreeFileMemory)
 {
     if (Memory)
@@ -239,7 +328,6 @@ DEBUG_PLATFORM_FREE_FILE_MEMORY(DEBUGPlatformFreeFileMemory)
         free(Memory);
     }
 }
-
 
 DEBUG_PLATFORM_READ_ENTIRE_FILE(DEBUGPlatformReadEntireFile)
 {
@@ -284,10 +372,6 @@ DEBUG_PLATFORM_READ_ENTIRE_FILE(DEBUGPlatformReadEntireFile)
     return Result;
 }
 
-
-
-
-
 DEBUG_PLATFORM_WRITE_ENTIRE_FILE(DEBUGPlatformWriteEntireFile)
 {
     bool32 Result = false;
@@ -312,7 +396,6 @@ DEBUG_PLATFORM_WRITE_ENTIRE_FILE(DEBUGPlatformWriteEntireFile)
     return Result;
 }
 
-
 /*
  #####  #          #     #####   #####  #######  #####  
 #     # #         # #   #     # #     # #       #     # 
@@ -322,7 +405,6 @@ DEBUG_PLATFORM_WRITE_ENTIRE_FILE(DEBUGPlatformWriteEntireFile)
 #     # #       #     # #     # #     # #       #     # 
  #####  ####### #     #  #####   #####  #######  #####  
 */   
-
 
 #define MAX_NUM_HID_ELEMENTS 2048
 struct HIDElement {
@@ -358,8 +440,6 @@ HIDElement* HIDElementGet(HIDElements * elements, uint32_t key)
     return 0;
 }
 
-//HIDElements                 g_hidElements;
-
 #pragma mark -- ObjC classes --
 #define MAX_HID_BUTTONS 32
 // View
@@ -368,6 +448,8 @@ HIDElement* HIDElementGet(HIDElements * elements, uint32_t key)
     CVDisplayLinkRef            _displayLink;
     real64                      _machTimebaseConversionFactor;
     HIDElements                 _hidElements;
+
+    NSString                    *_mainBundlePath;
 
     game_sound_output_buffer    _soundBuffer;
     game_offscreen_buffer       _renderBuffer;
@@ -396,6 +478,10 @@ HIDElement* HIDElementGet(HIDElements * elements, uint32_t key)
 
 @end
 
+
+
+
+
 /*
 #     # ### ######  
 #     #  #  #     # 
@@ -406,7 +492,6 @@ HIDElement* HIDElementGet(HIDElements * elements, uint32_t key)
 #     # ### ######                    
 */
 // https://developer.apple.com/library/mac/documentation/DeviceDrivers/Conceptual/HID/new_api_10_5/tn2187.html#//apple_ref/doc/uid/TP40000970-CH214-SW2
-
 // example where queues are used:
 //https://github.com/gameplay3d/GamePlay/blob/master/gameplay/src/PlatformMacOSX.mm
 
@@ -493,21 +578,8 @@ static void OSXHIDDeviceAdded(
 
 
         HIDElement e = {tIOHIDElementType, usagePage,usage,logicalMin, logicalMax };
-
         long key = (usagePage << 16) | usage;
-
-        // TODO(jeff): Change NSDictionary to a simple hash table.
-        // TODO(jeff): Add a hash table for each controller. Use cookies for ID.
-        // TODO(jeff): Change HandmadeHIDElement to a simple struct.
-       /* HandmadeHIDElement* e = [[HandmadeHIDElement alloc] initWithType:tIOHIDElementType
-                                                               usagePage:usagePage
-                                                                   usage:usage
-                                                                     min:logicalMin
-                                                                     max:logicalMax];
-        */
-
         HIDElementAdd(&(view->_hidElements), key, e);
-        //[view->_elementDictionary setObject:e forKey:[NSNumber numberWithLong:key]];
     }
    
 }   
@@ -753,6 +825,7 @@ static void OSXHIDValueChanged(
                 keyName = @"l";
                 if (elementValue == 1){
                     if(view->_recordingOn == 0){ // turn on
+                        OSXEndInputPlayBack(&view->_osxState);
                         OSXBeginRecordingInput(&view->_osxState, 1);
                         printf("starting recordning\n");
                         view->_recordingOn = 1;
@@ -760,9 +833,11 @@ static void OSXHIDValueChanged(
                     else // turn off
                     {
                         printf("ending recordning\n");
+                        view->_recordingOn = 0;
                         OSXEndRecordingInput(&view->_osxState);
                         OSXBeginInputPlayBack(&view->_osxState, 1);
-                        view->_recordingOn = 0;
+
+                        
                     }
 
                     
@@ -1001,6 +1076,7 @@ static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink,
     // Offscreen render buffer 
     if (self) {
         _renderBuffer.Width = 800;
+        _renderBuffer.BytesPerPixel = 4;
         _renderBuffer.Height = 600;
         _renderBuffer.Pitch = _renderBuffer.Width * 4; // bytes per pixel = 4
         _renderBuffer.Memory = calloc(1, _renderBuffer.Pitch * _renderBuffer.Height);
@@ -1014,61 +1090,94 @@ static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink,
     _gameMemory.DEBUGPlatformReadEntireFile = DEBUGPlatformReadEntireFile;
     _gameMemory.DEBUGPlatformWriteEntireFile = DEBUGPlatformWriteEntireFile;
 
+    
 
     // TODO(casey): Handle various memory footprints (USING SYSTEM METRICS)
     uint64 TotalSize = _gameMemory.PermanentStorageSize + _gameMemory.TransientStorageSize;
 
-    // TODO:(filip): mac os x has a quite different mem system then windows
-    // this works for now, but needs to be investigated further
-    vm_address_t BaseAddress = Terabytes(4);
+    // NOTE:(filip): mac os x has a quite different mem system then windows so 
+    // we can't transfer the exact same values. My test shows that a BaseAddress
+    //  above 5 GB seems to work. I would prefer to have a solid number here but
+    //  since it is for debugging purposes this is easily changed so that it 
+    // works per dev machine/OS version etc.
 
+    // The game
+    void * RequestedAddress = (void*)Gigabytes(8);
+    void * BaseAddress;
+#if 0
     kern_return_t result = vm_allocate((vm_map_t)mach_task_self(),
                                        (vm_address_t*)&BaseAddress,
                                        TotalSize,
                                        VM_FLAGS_FIXED);
 
-
-    
-    /*vm_address_t BaseAddress;
-    vm_address_t BaseAddress2;
-    kern_return_t result = vm_allocate((vm_map_t)mach_task_self(),
-                                       (vm_address_t*)&BaseAddress,
-                                       TotalSize,
-                                       VM_FLAGS_ANYWHERE);
-
-    kern_return_t result2 = vm_allocate((vm_map_t)mach_task_self(),
-                                       (vm_address_t*)&BaseAddress2,
-                                       TotalSize,
-                                       VM_FLAGS_ANYWHERE);
-    
-    printf("allocated  2 at: %p\n", BaseAddress2 );
-    
-    */
-    _osxState.TotalSize = TotalSize;
-    _osxState.GameMemoryBlock = (void*)BaseAddress;
-
-
-    _gameMemory.PermanentStorage = _osxState.GameMemoryBlock ;
-    printf("allocated  1 at: %p\n", BaseAddress );
-    
     if (result != KERN_SUCCESS)
     {
         NSLog(@"Error allocating memory");
     }
-    
+#endif
+    BaseAddress = mmap(RequestedAddress, TotalSize,
+                                        PROT_READ|PROT_WRITE,
+                                        MAP_PRIVATE|MAP_FIXED|MAP_ANON,
+                                        -1, 0);
+    if (BaseAddress == MAP_FAILED)
+    {
+        NSLog(@"Mapping faield.");
+    }
+    _osxState.TotalSize = TotalSize;
+    _osxState.GameMemoryBlock = (void*)BaseAddress;
+
+    _gameMemory.PermanentStorage = _osxState.GameMemoryBlock ;
     _gameMemory.TransientStorage = ((uint8*)_gameMemory.PermanentStorage
                                    + _gameMemory.PermanentStorageSize);
-
     
+    NSString *bundlePath = [[NSBundle mainBundle] resourcePath];
+    NSString *secondParentPath = [[bundlePath stringByDeletingLastPathComponent] stringByDeletingLastPathComponent];
+    _mainBundlePath = [secondParentPath stringByDeletingLastPathComponent];
+    NSLog(@"main bundle path%@", _mainBundlePath);
+    strcpy(_osxState.MainBundlePath, [_mainBundlePath UTF8String]);
+    printf("main bundle string:%s\n", _osxState.MainBundlePath);
+
+    for(int ReplayIndex = 0;
+            ReplayIndex < ArrayCount(_osxState.ReplayBuffers);
+            ++ReplayIndex)
+        {
+            osx_replay_buffer *ReplayBuffer = &_osxState.ReplayBuffers[ReplayIndex];
+            
+            // Create filename for the state
+            OSXGetInputFileLocation(&_osxState, false, ReplayIndex, ReplayBuffer->FileName );
+
+            ReplayBuffer->FileDescriptor = open(
+                ReplayBuffer->FileName, O_RDWR | O_CREAT /*| O_NONBLOCK|  O_TRUNC*/, 0666);
+
+
+            
+            // pre alloc?
+            //fstore_t store = {F_ALLOCATECONTIG, F_PEOFPOSMODE, 0, TotalSize};
+            //int ret = fcntl(ReplayBuffer->FileDescriptor, F_PREALLOCATE, &store);
+            //ftruncate(ReplayBuffer->FileDescriptor, TotalSize);
+            
+            ReplayBuffer->MemoryBlock = mmap(0, TotalSize, 
+                PROT_READ|PROT_WRITE, /*MAP_SHARED*/MAP_PRIVATE, 
+                ReplayBuffer->FileDescriptor, 0);
+        
+            
+            if(ReplayBuffer->MemoryBlock)
+            {
+
+            }
+            else
+            {
+                // TODO(casey): Diagnostic
+            }
+        }
+
+
     // load game code
     const char *frameworksPath = [[[NSBundle mainBundle] privateFrameworksPath] UTF8String];
     char dylibpath[512];
     snprintf(dylibpath, 512, "%s%s", frameworksPath, "/handmade.dylib");
-
-
+    
     _gameCode = OSXLoadGameCode(dylibpath);
-
-
 
     // timing
     mach_timebase_info_data_t timebase;
@@ -1276,7 +1385,7 @@ static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink,
     Buffer.Width = _renderBuffer.Width; 
     Buffer.Height = _renderBuffer.Height;
     Buffer.Pitch = _renderBuffer.Pitch; 
-
+    Buffer.BytesPerPixel = _renderBuffer.BytesPerPixel; 
     
 
 
@@ -1289,15 +1398,18 @@ static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink,
     game_controller_input* NewController = &NewInput->Controllers[0];
 
     NewController->IsAnalog = true;
-    NewController->StickAverageX = _dummy[kHIDUsage_KeyboardRightArrow]*2 ;//_hidY;
-    NewController->StickAverageY =  _hidY;
+    int RightDown = _dummy[kHIDUsage_KeyboardRightArrow];
+    int LeftDown = _dummy[kHIDUsage_KeyboardLeftArrow];
+
+    NewController->StickAverageX = RightDown? 2:LeftDown?-2:0;
+    NewController->StickAverageY = _dummy[kHIDUsage_KeyboardUpArrow]*2;
 
     NewController->MoveDown.EndedDown = _hidButtons[1];
     NewController->MoveUp.EndedDown = _hidButtons[2];
     NewController->MoveLeft.EndedDown = _hidButtons[3];
     NewController->MoveRight.EndedDown = _hidButtons[4];
 
-
+    if (_recordingOn) printf("_recordingOn:%d\n", _recordingOn);
     if(_osxState.InputRecordingIndex && _recordingOn)
     {
         OSXRecordInput(&_osxState, NewInput);
@@ -1310,8 +1422,9 @@ static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink,
         printf("playing back\n");
     }
 
-
-    _gameCode.UpdateAndRender(&_gameMemory, NewInput, &Buffer);
+    if(_gameCode.UpdateAndRender){
+        _gameCode.UpdateAndRender(&_gameMemory, NewInput, &Buffer);
+    }
 
     // copy into texture
     [[self openGLContext] makeCurrentContext];
@@ -1373,13 +1486,18 @@ static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink,
 	NSRect frame = [[s_window contentView] bounds];
 	s_view = [[HandmadeView alloc] initWithFrame: frame];
 	[s_window setContentView:   s_view];
-    //[s_window orderFrontRegardless];
+
+    
+
+    [s_window orderFrontRegardless];
     [window setLevel: NSStatusWindowLevel];
     [window makeKeyAndOrderFront:self];
-        // init joysticks etc
-        OSXHIDSetup();
+    // init joysticks etc
+    OSXHIDSetup();
     }
+
 }
+
 - (void)applicationDidBecomeActive:(NSNotification *)aNotification {
     [s_window setAlphaValue: 1.0];
     [s_window setIgnoresMouseEvents: NO];
@@ -1395,14 +1513,12 @@ static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink,
     NSLog(@"applicationWillTerminate"); 
 }
 
-
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication*)sender
 {
     NSLog(@"applicationShouldTerminateAfterLastWindowClosed");
     return YES;
 }
 @end
-
 
 int main(int argc, const char * argv[]) {
     NSLog(@"Starting");
