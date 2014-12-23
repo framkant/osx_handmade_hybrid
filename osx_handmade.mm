@@ -11,16 +11,16 @@
     I have got a lot of inspiration, tips and help from the handmadehero 
     forums. I want to mention Jeff Buck(@itfrombit) and Arthur Langereis 
     (@zenmumbler) which have been especially engaged in the Mac port. 
-    Jeff has a more or less complete implementation at
+    Jeff has a more or less complete implementation at his github repo
 
-    I use code by my own research () except for the HID handling which is 
-    copied  more or less directly from @itfrombit (Jeff Buck).
+    I use code by my own research () except for the HID handling and most 
+    of the audio code which is copied  more or less directly from @itfrombit 
+    (Jeff Buck).
     This is mentioned in the code.
 
     TODO(filip):
-    - AUDIO
-        - add something that works
-            - @zenmumbler and @itfrombit have working code
+    - Audio
+        - look at win32 example and achieve parity
     - INPUT
         - handle gamepad like in win32
             - save name of controller
@@ -31,6 +31,8 @@
             - record ended down
 
         - handle keyboard just like gamepad
+    - GENERAL
+        - cleanup!
 */
 
 #include <stdint.h>
