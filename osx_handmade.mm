@@ -43,6 +43,7 @@
 #import <IOKit/IOKitLib.h>
 #import <IOKit/usb/IOUSBLib.h>
 #include <mach/mach_time.h>
+#import <AudioUnit/AudioUnit.h>
 
 // The game
 #include "handmade.h"
@@ -88,6 +89,12 @@ rdtsc()
 @class HandmadeView;
 static NSWindow *s_window;
 static HandmadeView *s_view;
+
+global_variable AudioUnit   GlobalAudioUnit;
+global_variable double      GlobalAudioUnitRenderPhase;
+
+global_variable Float64     GlobalFrequency = 800.0;
+global_variable Float64     GlobalSampleRate = 48000.0;
 
 // NSWindow IBoutlet called "window" and
 // NSApplicationDelegate IBoutlet called "delegate" are created by xcode
@@ -962,6 +969,124 @@ void OSXHIDSetup()
 */
 
 
+OSStatus SineWaveRenderCallback(void * inRefCon,
+                                AudioUnitRenderActionFlags * ioActionFlags,
+                                const AudioTimeStamp * inTimeStamp,
+                                UInt32 inBusNumber,
+                                UInt32 inNumberFrames,
+                                AudioBufferList * ioData)
+{
+    #pragma unused(ioActionFlags)
+    #pragma unused(inTimeStamp)
+    #pragma unused(inBusNumber)
+
+    double currentPhase = *((double*)inRefCon);
+    Float32* outputBuffer = (Float32 *)ioData->mBuffers[0].mData;
+    const double phaseStep = (GlobalFrequency / GlobalSampleRate) * (2.0 * M_PI);
+
+    for (UInt32 i = 0; i < inNumberFrames; i++)
+    {
+        outputBuffer[i] = 0.7 * sin(currentPhase);
+        currentPhase += phaseStep;
+    }
+
+    // Copy to the stereo (or the additional X.1 channels)
+    for(UInt32 i = 1; i < ioData->mNumberBuffers; i++)
+    {
+        memcpy(ioData->mBuffers[i].mData, outputBuffer, ioData->mBuffers[i].mDataByteSize);
+    }
+
+    *((double *)inRefCon) = currentPhase;
+
+    return noErr;
+}
+// https://developer.apple.com/library/mac/technotes/tn2091/_index.html
+void OSXInitCoreAudio()
+{
+    AudioComponent comp;
+
+    AudioComponentDescription desc;
+    desc.componentType         = kAudioUnitType_Output;
+    desc.componentSubType      = kAudioUnitSubType_HALOutput;
+    desc.componentManufacturer = kAudioUnitManufacturer_Apple;
+    desc.componentFlags       = 0;
+    desc.componentFlagsMask   = 0;
+
+    comp = AudioComponentFindNext(NULL, &desc);
+    AudioComponentInstanceNew(comp, &GlobalAudioUnit);
+    AudioUnitInitialize(GlobalAudioUnit);
+
+    #if 0
+ //There are several different types of Audio Units.
+    //Some audio units serve as Outputs, Mixers, or DSP
+    //units. See AUComponent.h for listing
+    desc.componentType = kAudioUnitType_Output;
+ 
+    //Every Component has a subType, which will give a clearer picture
+    //of what this components function will be.
+    desc.componentSubType = kAudioUnitSubType_HALOutput;
+ 
+     //all Audio Units in AUComponent.h must use
+     //"kAudioUnitManufacturer_Apple" as the Manufacturer
+    desc.componentManufacturer = kAudioUnitManufacturer_Apple;
+    desc.componentFlags = 0;
+    desc.componentFlagsMask = 0;
+ 
+    //Finds a component that meets the desc spec's
+    comp = AudioComponentFindNext(NULL, &desc);
+    if (comp == NULL) exit (-1);
+ 
+     //gains access to the services provided by the component
+    AudioComponentInstanceNew(comp, &auHAL);
+
+#endif
+
+    // NOTE(jeff): Make this stereo
+    AudioStreamBasicDescription asbd;
+    asbd.mSampleRate       = GlobalSampleRate;
+    asbd.mFormatID         = kAudioFormatLinearPCM;
+    asbd.mFormatFlags      = kAudioFormatFlagsNativeFloatPacked;
+    asbd.mChannelsPerFrame = 1;
+    asbd.mFramesPerPacket  = 1;
+    asbd.mBitsPerChannel   = 1 * sizeof(Float32) * 8;
+    asbd.mBytesPerPacket   = 1 * sizeof(Float32);
+    asbd.mBytesPerFrame    = 1 * sizeof(Float32);
+
+    // TODO(jeff): Add some error checking...
+    AudioUnitSetProperty(GlobalAudioUnit,
+                         kAudioUnitProperty_StreamFormat,
+                         kAudioUnitScope_Input,
+                         0,
+                         &asbd,
+                         sizeof(asbd));
+
+    UInt32 maxFramesPerSlice = 4096;
+    AudioUnitSetProperty(GlobalAudioUnit, 
+                        kAudioUnitProperty_MaximumFramesPerSlice, 
+                        kAudioUnitScope_Global, 0, &maxFramesPerSlice, sizeof(UInt32));
+
+    AURenderCallbackStruct cb;
+    cb.inputProc       = SineWaveRenderCallback;
+    cb.inputProcRefCon = &GlobalAudioUnitRenderPhase;
+
+    AudioUnitSetProperty(GlobalAudioUnit,
+                         kAudioUnitProperty_SetRenderCallback,
+                         kAudioUnitScope_Global,
+                         0,
+                         &cb,
+                         sizeof(cb));
+
+    AudioOutputUnitStart(GlobalAudioUnit);
+}
+
+
+void OSXStopCoreAudio()
+{
+    NSLog(@"Stopping Core Audio");
+    AudioOutputUnitStop(GlobalAudioUnit);
+    AudioUnitUninitialize(GlobalAudioUnit);
+    AudioComponentInstanceDispose(GlobalAudioUnit);
+}
 
 
 
@@ -1050,6 +1175,10 @@ static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink,
 ### #     # ###    #    
 */
 @implementation HandmadeView
+
+- (BOOL) acceptsFirstResponder{
+    return YES;
+}
 
 - (instancetype)initWithFrame:(NSRect)frameRect {
     
@@ -1403,6 +1532,7 @@ static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink,
 
     NewController->StickAverageX = RightDown? 2:LeftDown?-2:0;
     NewController->StickAverageY = _dummy[kHIDUsage_KeyboardUpArrow]*2;
+    GlobalFrequency = 440.0 + (15 * NewController->StickAverageY); 
 
     NewController->MoveDown.EndedDown = _hidButtons[1];
     NewController->MoveUp.EndedDown = _hidButtons[2];
@@ -1492,8 +1622,10 @@ static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink,
     [s_window orderFrontRegardless];
     [window setLevel: NSStatusWindowLevel];
     [window makeKeyAndOrderFront:self];
+
     // init joysticks etc
     OSXHIDSetup();
+    OSXInitCoreAudio();
     }
 
 }
