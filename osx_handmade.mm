@@ -166,7 +166,7 @@ void OSXUnloadGameCode(osx_game_code* GameCode)
         GameCode->UpdateAndRender = 0;
         GameCode->GetSoundSamples = 0;
         int err = dlclose(GameCode->Lib);
-        NOTUSED(err);
+        //NOTUSED(err);
     }
 }
 internal
@@ -360,7 +360,7 @@ DEBUG_PLATFORM_READ_ENTIRE_FILE(DEBUGPlatformReadEntireFile)
                 }
                 else
                 {
-                    DEBUGPlatformFreeFileMemory(Result.Contents);
+                    DEBUGPlatformFreeFileMemory(Thread, Result.Contents);
                     Result.Contents = 0;
                 }
             }
@@ -816,18 +816,22 @@ static void OSXHIDValueChanged(
 
             case kHIDUsage_KeyboardUpArrow:
                 keyName = @"Up";
+		view->_hidButtons[2] = elementValue;
                 break;
 
             case kHIDUsage_KeyboardLeftArrow:
                 keyName = @"Left";
+		view->_hidButtons[3] = elementValue;
                 break;
 
             case kHIDUsage_KeyboardDownArrow:
                 keyName = @"Down";
+		view->_hidButtons[1] = elementValue;
                 break;
 
             case kHIDUsage_KeyboardRightArrow:
                 keyName = @"Right";
+		view->_hidButtons[4] = elementValue;
                 break;
             case kHIDUsage_KeyboardL:
             {
@@ -988,7 +992,7 @@ OSStatus SineWaveRenderCallback(void * inRefCon,
 
     for (UInt32 i = 0; i < inNumberFrames; i++)
     {
-        outputBuffer[i] = 0.7 * sin(currentPhase);
+        outputBuffer[i] = 0.0;//0.7 * sin(currentPhase);
         currentPhase += phaseStep;
     }
 
@@ -1206,9 +1210,9 @@ static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink,
     
     // Offscreen render buffer 
     if (self) {
-        _renderBuffer.Width = 800;
+        _renderBuffer.Width = 960;
         _renderBuffer.BytesPerPixel = 4;
-        _renderBuffer.Height = 600;
+        _renderBuffer.Height = 540;
         _renderBuffer.Pitch = _renderBuffer.Width * 4; // bytes per pixel = 4
         _renderBuffer.Memory = calloc(1, _renderBuffer.Pitch * _renderBuffer.Height);
     }
@@ -1352,14 +1356,28 @@ static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink,
     // |\|
     // B-C
      
-    GLfloat vertices[] = {
-	-1,  1, 0, 0, 1, // A
-	-1, -1, 0, 0, 0, // B
-	1,  -1, 0, 1, 0, // C
+    // GLfloat vertices[] = {
+    // 	-1,  1, 0, 0, 1, // A
+    // 	-1, -1, 0, 0, 0, // B
+    // 	1,  -1, 0, 1, 0, // C
 
-	-1,  1, 0, 0, 1, // A
-	1,  -1, 0, 1, 0, // C
-	1,  1,  0, 1, 1 //  D 
+    // 	-1,  1, 0, 0, 1, // A
+    // 	1,  -1, 0, 1, 0, // C
+    // 	1,  1,  0, 1, 1 //  D 
+    // };
+
+    // A-D
+    // |\|
+    // B-C
+    
+    GLfloat vertices[] = {
+	-1,  1, 0, 0, 0, // A
+	-1, -1, 0, 0, 1, // B
+	1,  -1, 0, 1, 1, // C
+
+	-1,  1, 0, 0, 0, // A
+	1,  -1, 0, 1, 1, // C
+	1,  1,  0, 1, 0 //  D 
     };
     size_t bytes = sizeof(GLfloat) * 6 *5;
 
@@ -1511,14 +1529,18 @@ static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink,
     CGLLockContext([[self openGLContext] CGLContextObj]);
     [self reshape];
 
+    thread_context Thread = {};
+    
     game_offscreen_buffer Buffer = {};
     Buffer.Memory = _renderBuffer.Memory;
     Buffer.Width = _renderBuffer.Width; 
     Buffer.Height = _renderBuffer.Height;
     Buffer.Pitch = _renderBuffer.Pitch; 
     Buffer.BytesPerPixel = _renderBuffer.BytesPerPixel; 
-    
 
+    real32 MonitorRefreshHz = 60;
+    real32 GameUpdateHz = (MonitorRefreshHz / 2.0f);
+    real32 TargetSecondsPerFrame = 1.0f / (real32)GameUpdateHz;
 
     // TODO(jeff): Fix this for multiple controllers
     local_persist game_input Input[2] = {};
@@ -1528,7 +1550,7 @@ static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink,
     game_controller_input* OldController = &OldInput->Controllers[0];
     game_controller_input* NewController = &NewInput->Controllers[0];
 
-    NewController->IsAnalog = true;
+    NewController->IsAnalog = false;
     int RightDown = _dummy[kHIDUsage_KeyboardRightArrow];
     int LeftDown = _dummy[kHIDUsage_KeyboardLeftArrow];
 
@@ -1541,6 +1563,8 @@ static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink,
     NewController->MoveLeft.EndedDown = _hidButtons[3];
     NewController->MoveRight.EndedDown = _hidButtons[4];
 
+    NewInput->dtForFrame = TargetSecondsPerFrame;
+    
     if (_recordingOn) printf("_recordingOn:%d\n", _recordingOn);
     if(_osxState.InputRecordingIndex && _recordingOn)
     {
@@ -1555,7 +1579,7 @@ static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink,
     }
 
     if(_gameCode.UpdateAndRender){
-        _gameCode.UpdateAndRender(&_gameMemory, NewInput, &Buffer);
+        _gameCode.UpdateAndRender(&Thread, &_gameMemory, NewInput, &Buffer);
     }
 
     // copy into texture
