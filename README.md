@@ -18,6 +18,7 @@ I started this repo as a separate endeavour to learn more about how cocoa and th
 Main differences from Jeffs examples:
 - I use Core OpenGL3.3 for the rendering backend just because I like it.
 - Menus and windows are set up in xcode while the rest of the development is done externally.
+- Different buildning and app bundling
 
 
 ##Build##
