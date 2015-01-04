@@ -4,7 +4,8 @@
 ./makebundle.sh build/Handmade
 ./makexcscheme.sh build/Handmade.app osx_support_files/DebugHandmadeHybrid/DebugHandmadeHybrid.xcodeproj/xcshareddata/xcschemes/RunDebug.xcscheme
 
-CFLAGS="-g -Wall -Wno-c++11-compat-deprecated-writable-strings"
+#CFLAGS="-g -Wall -Wno-c++11-compat-deprecated-writable-strings -Wno-null-dereference"
+CFLAGS=-O2
 FRAMEWORKS="-framework Cocoa -framework QuartzCore -framework OpenGL -framework IOKit -framework AudioUnit"
 HANDMADE_DEFINES="-DHANDMADE_INTERNAL=1 -DHANDMADE_SLOW=1 -DHANDMADE_OSX=1"
 

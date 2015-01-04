@@ -1,0 +1,217 @@
+// -*-objc-*-
+
+#include "HandmadeRenderer.mm"
+
+// Graphics
+
+struct HandmadeContext
+{
+    NSOpenGLContext       *glContext;
+    HandmadeRenderData  renderData;
+    void                  (*render)(HandmadeRenderData* rd);
+};
+
+static CVReturn DisplayCallback (CVDisplayLinkRef displayLink,
+				 const CVTimeStamp *inNow,
+				 const CVTimeStamp *inOutputTime,
+				 CVOptionFlags flagsIn,
+				 CVOptionFlags *flagsOut,
+				 void *displayLinkContext)
+{
+
+    static double previousOutputVideoTime = 0;
+    double deltaSeconds = (inOutputTime->videoTime - previousOutputVideoTime) /
+	(double)inOutputTime->videoTimeScale;
+    previousOutputVideoTime = inOutputTime->videoTime;
+    printf("delta: %f\n", deltaSeconds);
+    // printf("OSXRender\n");
+    static double t0;
+    static double t1;
+    static uint32_t counter = 0;
+    t1 = GetTime();
+    double diff = t1-t0;
+    counter++;
+    if (diff >2.0/60.0) printf("dl(%d): frame-to-frame: %f\n",counter,  diff );
+    t0 = t1;
+
+    HandmadeContext* context = (HandmadeContext*) displayLinkContext;
+    CGLSetCurrentContext((CGLContextObj) [context->glContext CGLContextObj]);
+    CGLLockContext((CGLContextObj) [context->glContext CGLContextObj]);
+    //printf("render\n");
+    context->render(&context->renderData);
+
+    CGLFlushDrawable((CGLContextObj) [context->glContext CGLContextObj]);
+    CGLUnlockContext((CGLContextObj) [context->glContext CGLContextObj]);
+    
+    return kCVReturnSuccess;
+}
+
+// View
+@interface GLView: NSOpenGLView {
+@public
+
+    HandmadeContext             _handmadeContext; // for sending to the renderer thread
+
+    CVDisplayLinkRef            _displayLink;
+    NSTimer                     *_renderTimer;     // alternative to drive rendering
+    real64                      _machTimebaseConversionFactor;
+    
+    NSString                    *_mainBundlePath;
+    BOOL                        _setupComplete; // to make sure we don't init twice
+}
+
+- (instancetype) initWithFrame:(NSRect) frameRect;
+- (void) drawRect:(NSRect) dirtyRect; // don't use
+- (void) timerFired:(id) sender; // if using timer instead of display link
+
+@end
+
+@implementation GLView
+
+
+
+- (instancetype)initWithFrame:(NSRect)frameRect {
+    
+    NSLog(@"initWithFrame");
+    if (_setupComplete){
+        printf("trying to init again...\n");
+        return self;
+    }
+    
+    // setup pixel format
+    NSOpenGLPixelFormatAttribute attribs[] = {
+	NSOpenGLPFAOpenGLProfile, NSOpenGLProfileVersion3_2Core,
+	NSOpenGLPFAColorSize    , 24                           ,
+	NSOpenGLPFAAlphaSize    , 8                            ,
+	NSOpenGLPFADoubleBuffer ,
+	NSOpenGLPFAAccelerated  ,
+	0
+    };
+    
+    NSOpenGLPixelFormat *fmt = [[NSOpenGLPixelFormat alloc]
+				       initWithAttributes: attribs];
+    
+    self = [super initWithFrame: frameRect pixelFormat:fmt];
+
+    // prepare data needed for driving the rendering
+    // that is: the opengl context (that needs to be locked)
+    // and the data + callback for actual rendering
+    _handmadeContext.glContext = [self openGLContext];
+    [_handmadeContext.glContext makeCurrentContext];
+    _handmadeContext.render = OSXRender;
+    _handmadeContext.renderData.width = frameRect.size.width;
+    _handmadeContext.renderData.height = frameRect.size.height;
+
+
+    
+    CGLError err = kCGLNoError;
+    CGLContextObj ctx = CGLGetCurrentContext();
+    
+    // Enable the multi-threading
+    //err =  CGLEnable( ctx, kCGLCEMPEngine);
+    
+    if (err != kCGLNoError )
+    {
+     	// Multi-threaded execution is possibly not available
+     	// Insert your code to take appropriate action
+    }
+    
+
+    
+    // timing
+    mach_timebase_info_data_t timebase;
+    mach_timebase_info(&timebase);
+    _machTimebaseConversionFactor = (double)timebase.numer / (double)timebase.denom;
+
+
+    
+    
+    return self;
+}
+
+
+- (void)prepareOpenGL
+{
+    NSLog(@"Preparing opengl");
+    [super prepareOpenGL];
+    [[self openGLContext] makeCurrentContext];
+    [[self window] makeKeyAndOrderFront: self];
+    
+    GLint swapInt = 1;
+    [[self openGLContext] setValues:&swapInt forParameter:NSOpenGLCPSwapInterval];
+
+    OSXSetupData(&_handmadeContext.renderData);
+    OSXSetupOpenGL(&_handmadeContext.renderData);
+
+//#define OSX_USE_DISPLAYLINK 
+#ifdef OSX_USE_DISPLAYLINK
+    
+    // Display link
+    CVDisplayLinkCreateWithActiveCGDisplays(&_displayLink);
+
+
+    CGLContextObj cglContext = [[self openGLContext] CGLContextObj];
+    CGLPixelFormatObj cglPixelFormat = [[self pixelFormat] CGLPixelFormatObj];
+    CVDisplayLinkSetCurrentCGDisplayFromOpenGLContext(_displayLink, cglContext, cglPixelFormat);
+    
+    CVDisplayLinkSetOutputCallback(_displayLink, &DisplayCallback, ( void *)(&_handmadeContext));
+    CVDisplayLinkStart(_displayLink);
+#else
+    _renderTimer = [NSTimer timerWithTimeInterval:0.001   //a 1ms time interval
+					   target:self
+					 selector:@selector(timerFired:)
+					 userInfo:nil
+					  repeats:YES];
+    
+    [[NSRunLoop currentRunLoop] addTimer:_renderTimer
+				 forMode:NSDefaultRunLoopMode];
+    [[NSRunLoop currentRunLoop] addTimer:_renderTimer
+				 forMode:NSEventTrackingRunLoopMode]; //Ensure timer fires during resize
+#endif
+    
+}
+
+- (void) becomeKeyWindow
+{
+    [s_window setAlphaValue:1.0];
+}
+
+- (void)renewGState
+{	
+    [[self window] disableScreenUpdatesUntilFlush];
+    [super renewGState];
+}
+- (void) timerFired:(id)sender
+{
+    [self drawFrame: [self bounds]];
+}
+
+- (void)drawFrame:(NSRect)rect {
+    
+
+    static double t0;
+    static double t1;
+    static uint32_t counter = 0;
+    t1 = GetTime();
+    double diff = t1-t0;
+    counter++;
+    if (diff >2.0/60.0) printf("dl(%d): frame-to-frame: %f\n",counter,  diff );
+    t0 = t1;
+
+    HandmadeContext* context = &_handmadeContext;
+    
+    context->render(&context->renderData);
+    CGLFlushDrawable((CGLContextObj) [context->glContext CGLContextObj]);
+
+    
+}
+- (BOOL)acceptsFirstResponder
+{
+	return YES;
+}
+
+- (BOOL)becomeFirstResponder
+{
+	return YES;
+}
+@end

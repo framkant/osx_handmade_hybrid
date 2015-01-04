@@ -1,40 +1,3 @@
-/*
-    Author: Filip Wanstrom (@filipwanstrom)
-    Latest change: 2014-12-21
-    
-    This is a WIP of a the Mac platform layer for Handmade Hero 
-    (handmadehero.org, a game development project by Casey Muratori)
-
-    This file will be marked "beta" when when it's good enough to use
-    Until then, consider this a educational or something :)
-
-    I have got a lot of inspiration, tips and help from the handmadehero 
-    forums. I want to mention Jeff Buck(@itfrombit) and Arthur Langereis 
-    (@zenmumbler) which have been especially engaged in the Mac port. 
-    Jeff has a more or less complete implementation at his github repo
-
-    I use code by my own research () except for the HID handling and most 
-    of the audio code which is copied  more or less directly from @itfrombit 
-    (Jeff Buck).
-    This is mentioned in the code.
-
-    TODO(filip):
-    - Audio
-        - look at win32 example and achieve parity
-    - INPUT
-        - handle gamepad like in win32
-            - save name of controller
-            - make difference between controllers (1-4)! 
-            - Couple input to the correct controller
-
-            - each up/down event = add to halftransition count
-            - record ended down
-
-        - handle keyboard just like gamepad
-    - GENERAL
-        - cleanup!
-*/
-
 #include <stdint.h>
 #include <math.h>
 
@@ -47,36 +10,43 @@
 #include <mach/mach_time.h>
 #import <AudioUnit/AudioUnit.h>
 
+
+#ifdef PRINT_STUFF
+#define debugprintf(fmt, ...) printf(fmt, ##__VA_ARGS__)
+#else
+#define debugprintf(fmt, ...) 
+#endif
+
+
 // The game
 #include "handmade.h"
 #include "osx_handmade.h"
 
-// NOTE(filip): copied from jeff
-#ifndef HANDMADE_USE_ASM_RDTSC
-// NOTE(jeff): Thanks to @visitect for this suggestion
-#define rdtsc __builtin_readcyclecounter
-#else
-internal inline uint64
-rdtsc()
+
+double GetTime()
 {
-    uint32 eax = 0;
-    uint32 edx;
-
-    __asm__ __volatile__("cpuid;"
-                 "rdtsc;"
-                : "+a" (eax), "=d" (edx)
-                :
-                : "%rcx", "%rbx", "memory");
-
-    __asm__ __volatile__("xorl %%eax, %%eax;"
-                 "cpuid;"
-                :
-                :
-                : "%rax", "%rbx", "%rcx", "%rdx", "memory");
-
-    return (((uint64)edx << 32) | eax);
+    static int first = 1;
+    static uint64_t abs_start = 0;
+    static double resolution = 1;
+    if(first) {
+	mach_timebase_info_data_t timebase;
+	mach_timebase_info(&timebase);
+	resolution = (double) timebase.numer / (double)(timebase.denom *1.0e9);
+	abs_start = mach_absolute_time();
+	first = 0;
+    }
+    uint64_t abs_time = mach_absolute_time();
+    double result = (double)(abs_time - abs_start)*resolution;
+    return result;
 }
-#endif
+
+
+
+#define rdtsc __builtin_readcyclecounter
+    
+
+
+
 
 /*
  #####  #       ####### ######     #    #        #####  
@@ -86,12 +56,14 @@ rdtsc()
 #     # #       #     # #     # ####### #             # 
 #     # #       #     # #     # #     # #       #     # 
  #####  ####### ####### ######  #     # #######  #####  
-*/                                                        
+*/
 
-@class HandmadeView;
-static NSWindow *s_window;
-static HandmadeView *s_view;
+// Graphics (+ key/mouse input?)
+@class GLView;
+static NSWindow             *s_window;
+static GLView         *s_view;
 
+// Audio
 global_variable AudioUnit   GlobalAudioUnit;
 global_variable double      GlobalAudioUnitRenderPhase;
 
@@ -195,11 +167,8 @@ void OSXReloadIfModified(osx_game_code *GameCode)
             ret.LastModified = OSXGetModTime(GameCode->DylibName);
             strncpy(ret.DylibName, GameCode->DylibName, 512);
             *GameCode= ret;
-
-        }
-
+	}
     }
-
 }
 
 // STATE REPLAY
@@ -405,91 +374,25 @@ DEBUG_PLATFORM_WRITE_ENTIRE_FILE(DEBUGPlatformWriteEntireFile)
     return Result;
 }
 
-/*
- #####  #          #     #####   #####  #######  #####  
-#     # #         # #   #     # #     # #       #     # 
-#       #        #   #  #       #       #       #       
-#       #       #     #  #####   #####  #####    #####  
-#       #       #######       #       # #             # 
-#     # #       #     # #     # #     # #       #     # 
- #####  ####### #     #  #####   #####  #######  #####  
-*/   
-
-#define MAX_NUM_HID_ELEMENTS 2048
-struct HIDElement {
-    long type;
-    long page;
-    long usage;
-    long min;
-    long max;
-};
-struct HIDElements {
-    uint32_t       numElements;   
-    uint32_t       keys[MAX_NUM_HID_ELEMENTS];
-    HIDElement     elements[MAX_NUM_HID_ELEMENTS]; 
+struct HIDGamePad
+{
+    int leftStickX;
+    int leftStickY;
+    int rightStickX;
+    int rightStickY;
+    int dPadLeft;
+    int dPadRight;
+    int dPadDown;
+    int dPadUp;
+    int buttonUp;
+    int buttonLeft;
+    int buttonRight;
+    int buttonDown;
+    int shoulderLeft;
+    int shoulderRight;
 };
 
-void HIDElementAdd(HIDElements * elements, uint32_t key, HIDElement e)
-{
-  //  Assert(elements->numElements < MAX_NUM_HID_ELEMENTS);
-    uint32_t index = elements->numElements;
-    elements->elements[index] = e;
-    elements->keys[index] = key;
-    elements->numElements++;
-    
-}
-HIDElement* HIDElementGet(HIDElements * elements, uint32_t key)
-{
-    uint32_t numElements = elements->numElements;
-    for(int i=0;i<numElements;i++){
-        if(key == elements->keys[i]) {
-            return &elements->elements[i]; 
-        }
-    }
-    return 0;
-}
-
-#pragma mark -- ObjC classes --
-#define MAX_HID_BUTTONS 32
-// View
-@interface HandmadeView : NSOpenGLView {
-@public
-    CVDisplayLinkRef            _displayLink;
-    real64                      _machTimebaseConversionFactor;
-    HIDElements                 _hidElements;
-
-    NSString                    *_mainBundlePath;
-
-    game_sound_output_buffer    _soundBuffer;
-    game_offscreen_buffer       _renderBuffer;
-    game_memory                 _gameMemory;
-    osx_game_code               _gameCode;
-    osx_state                   _osxState;
-
-    // input from callback
-    int                         _hidX;
-    int                         _hidY;
-    uint8                       _hidButtons[MAX_HID_BUTTONS];
-    int                         _recordingOn;
-    int                         _dummy[1024];
-
-    GLuint _vao; 
-    GLuint _vbo;
-    GLuint _tex;
-    GLuint _program;
-    BOOL                        _setupComplete;
-    
-}
-
-- (instancetype)initWithFrame:(NSRect)frameRect;
-- (CVReturn) getFrameForTime:(const CVTimeStamp*)outputTime;
-- (void)drawRect:(NSRect)dirtyRect;
-
-@end
-
-
-
-
+#include "glview.insert"
 
 /*
 #     # ### ######  
@@ -504,7 +407,121 @@ HIDElement* HIDElementGet(HIDElements * elements, uint32_t key)
 // example where queues are used:
 //https://github.com/gameplay3d/GamePlay/blob/master/gameplay/src/PlatformMacOSX.mm
 
+static Boolean IOHIDDevice_GetLongProperty(
+    IOHIDDeviceRef inDeviceRef,     // the HID device reference
+    CFStringRef inKey,              // the kIOHIDDevice key (as a CFString)
+    long * outValue)                // address where to return the output value
+{
+    Boolean result = FALSE;
+ 
+    CFTypeRef tCFTypeRef = IOHIDDeviceGetProperty(inDeviceRef, inKey);
+    if (tCFTypeRef) {
+        // if this is a number
+        if (CFNumberGetTypeID() == CFGetTypeID(tCFTypeRef)) {
+            // get its value
+            result = CFNumberGetValue((CFNumberRef) tCFTypeRef, kCFNumberSInt32Type, outValue);
+        }
+    }
+    return result;
+}   // IOHIDDevice_GetLongProperty
+// Get a HID device's product ID (long)
+long IOHIDDevice_GetProductID(IOHIDDeviceRef inIOHIDDeviceRef)
+{
+    long result = 0;
+    (void) IOHIDDevice_GetLongProperty(inIOHIDDeviceRef, CFSTR(kIOHIDProductIDKey), &result);
+    return result;
+} // IOHIDDevice_GetProductID
+
 static void OSXHIDDeviceAdded(
+    void *          context,       // context from IOHIDManagerRegisterDeviceMatchingCallback
+    IOReturn        result,        // the result of the matching operation
+    void *          sender,        // the IOHIDManagerRef for the new device
+    IOHIDDeviceRef  device // the new HID device
+    ) {
+    
+    GLView* view = ( __bridge GLView*)context;
+    
+    CFStringRef manufacturer = (CFStringRef)IOHIDDeviceGetProperty(device, CFSTR(kIOHIDManufacturerKey));
+    CFStringRef product = (CFStringRef)IOHIDDeviceGetProperty(device, CFSTR(kIOHIDProductKey));
+    long productId = IOHIDDevice_GetProductID(device);
+        
+    NSLog(@"Device was detected: %@ %@ id(%x)", ( NSString*)manufacturer, ( NSString*)product, productId);
+
+    // Return all HID elements for this device
+    NSArray *elements = ( NSArray *)IOHIDDeviceCopyMatchingElements(device, NULL, kIOHIDOptionsTypeNone);
+    NSLog(@"Device elements: %d\n", [elements count]);
+    
+    
+    for (id element in elements)
+    {
+	if (CFGetTypeID(element) != IOHIDElementGetTypeID()) {
+	    // this is a valid HID element reference
+	    NSLog(@"Not Valid");
+	}
+        IOHIDElementRef tIOHIDElementRef = ( IOHIDElementRef)element;
+        IOHIDElementType tIOHIDElementType = IOHIDElementGetType(tIOHIDElementRef);
+	
+        switch(tIOHIDElementType)
+        {
+	case kIOHIDElementTypeInput_Misc:
+	{
+	    printf("[misc] ");
+	    break;
+	}
+	
+	case kIOHIDElementTypeInput_Button:
+	{
+	    printf("[button] ");
+	    break;
+	}
+	
+	case kIOHIDElementTypeInput_Axis:
+	{
+	    printf("[axis] ");
+	    break;
+	}
+	
+
+	default:
+	    continue;
+	
+        }
+
+        uint32_t reportSize = IOHIDElementGetReportSize(tIOHIDElementRef);
+        uint32_t reportCount = IOHIDElementGetReportCount(tIOHIDElementRef);
+
+	if ((reportSize * reportCount) > 64){
+	    printf("reportSize * reportCount)  64)\n");
+            continue;
+        }
+
+        uint32_t usagePage = IOHIDElementGetUsagePage(tIOHIDElementRef);
+        uint32_t usage = IOHIDElementGetUsage(tIOHIDElementRef);
+        if (!usagePage || !usage)
+        {
+            continue;
+        }
+        if (-1 == usage)
+        {
+            continue;
+        }
+	if (usagePage > 65000)
+	{
+	    continue;
+	}
+	
+        CFIndex logicalMin = IOHIDElementGetLogicalMin(tIOHIDElementRef);
+        CFIndex logicalMax = IOHIDElementGetLogicalMax(tIOHIDElementRef);
+
+        printf("page/usage = %d:%d  min/max = (%ld, %ld)\n", usagePage, usage, logicalMin, logicalMax);
+
+
+        HIDElement e = {tIOHIDElementType, usagePage,usage,logicalMin, logicalMax };
+        long key = (usagePage << 16) | usage;
+        HIDElementAdd(&(view->_handmadeContext.renderData.hidElements), key, e);
+    }
+}   
+static void OSXHIDDeviceAddedOld(
     void *          context,       // context from IOHIDManagerRegisterDeviceMatchingCallback
     IOReturn        result,        // the result of the matching operation
     void *          sender,        // the IOHIDManagerRef for the new device
@@ -516,14 +533,13 @@ static void OSXHIDDeviceAdded(
     #pragma unused(sender)
     #pragma unused(device)
 
-    HandmadeView* view = ( __bridge HandmadeView*)context;
-
-    //IOHIDManagerRef mr = (IOHIDManagerRef)sender;
-
+    GLView* view = ( __bridge GLView*)context;
     CFStringRef manufacturerCFSR = (CFStringRef)IOHIDDeviceGetProperty(device, CFSTR(kIOHIDManufacturerKey));
     CFStringRef productCFSR = (CFStringRef)IOHIDDeviceGetProperty(device, CFSTR(kIOHIDProductKey));
 
     NSLog(@"Gamepad was detected: %@ %@", ( NSString*)manufacturerCFSR, ( NSString*)productCFSR);
+    
+    
 
     NSArray *elements = ( NSArray *)IOHIDDeviceCopyMatchingElements(device, NULL, kIOHIDOptionsTypeNone);
 
@@ -588,7 +604,7 @@ static void OSXHIDDeviceAdded(
 
         HIDElement e = {tIOHIDElementType, usagePage,usage,logicalMin, logicalMax };
         long key = (usagePage << 16) | usage;
-        HIDElementAdd(&(view->_hidElements), key, e);
+        HIDElementAdd(&(view->_handmadeContext.renderData.hidElements), key, e);
     }
    
 }   
@@ -628,16 +644,16 @@ static void OSXHIDValueChanged(
         return;
     }
 
-    //IOHIDElementCookie cookie = IOHIDElementGetCookie(element);
-    //IOHIDElementType type = IOHIDElementGetType(element);
-    //CFStringRef name = IOHIDElementGetName(element);
+    IOHIDElementCookie cookie = IOHIDElementGetCookie(element);
+    IOHIDElementType type = IOHIDElementGetType(element);
+    CFStringRef name = IOHIDElementGetName(element);
     int usagePage = IOHIDElementGetUsagePage(element);
     int usage = IOHIDElementGetUsage(element);
 
     CFIndex elementValue = IOHIDValueGetIntegerValue(value);
 
     // NOTE(jeff): This is the pointer back to our view
-    HandmadeView* view = ( HandmadeView*)context;
+    GLView* view = ( GLView*)context;
 
     // NOTE(jeff): This is just for reference. From the USB HID Usage Tables spec:
     // Usage Pages:
@@ -663,7 +679,7 @@ static void OSXHIDValueChanged(
         int hatDelta = 16;
 
         long key = ((usagePage << 16) | usage);
-        HIDElement* e = HIDElementGet(&view->_hidElements, key);
+        HIDElement* e = HIDElementGet(&view->_handmadeContext.renderData.hidElements, key);
 
         float normalizedValue = 0.0;
         if (e->max != e->min)
@@ -675,94 +691,94 @@ static void OSXHIDValueChanged(
 
         int scaledValue = scaledMin + normalizedValue * (scaledMax - scaledMin);
 
-        //printf("page:usage = %d:%d  value = %ld  ", usagePage, usage, elementValue);
+        //debugprintf("page:usage = %d:%d  value = %ld  ", usagePage, usage, elementValue);
         switch(usage)
         {
             case 0x30: // x
-                view->_hidX = scaledValue;
-                //printf("[x] scaled = %d\n", view->_hidX);
+                view->_handmadeContext.renderData.hidStickX = scaledValue;
+                debugprintf("[x] scaled = %d\n", view->_handmadeContext.renderData.hidStickX);
                 break;
 
             case 0x31: // y
-                view->_hidY = scaledValue;
-                //printf("[y] scaled = %d\n", view->_hidY);
+                view->_handmadeContext.renderData.hidStickY = scaledValue;
+                debugprintf("[y] scaled = %d\n", view->_handmadeContext.renderData.hidStickY);
                 break;
 
             case 0x32: // z
-                //view->_hidX = scaledValue;
-                //printf("[z] scaled = %d\n", view->_hidX);
+                view->_handmadeContext.renderData.hidStickZ = scaledValue;
+                debugprintf("[z] scaled = %d\n", view->_handmadeContext.renderData.hidStickZ);
                 break;
 
             case 0x35: // rz
-                //view->_hidY = scaledValue;
-                //printf("[rz] scaled = %d\n", view->_hidY);
+                view->_handmadeContext.renderData.hidStickY = scaledValue;
+                debugprintf("[rz] scaled = %d\n", view->_handmadeContext.renderData.hidStickRZ);
                 break;
 
             case 0x39: // Hat 0 = up, 2 = right, 4 = down, 6 = left, 8 = centered
             {
-                printf("[hat] ");
+                debugprintf("[hat] ");
                 switch(elementValue)
                 {
                     case 0:
-                        view->_hidX = 0;
-                        view->_hidY = -hatDelta;
-                        printf("n\n");
+                        view->_handmadeContext.renderData.hidStickX = 0;
+                        view->_handmadeContext.renderData.hidStickY = -hatDelta;
+                        debugprintf("n\n");
                         break;
 
                     case 1:
-                        view->_hidX = hatDelta;
-                        view->_hidY = -hatDelta;
-                        printf("ne\n");
+                        view->_handmadeContext.renderData.hidStickX = hatDelta;
+                        view->_handmadeContext.renderData.hidStickY = -hatDelta;
+                        debugprintf("ne\n");
                         break;
 
                     case 2:
-                        view->_hidX = hatDelta;
-                        view->_hidY = 0;
-                        printf("e\n");
+                        view->_handmadeContext.renderData.hidStickX = hatDelta;
+                        view->_handmadeContext.renderData.hidStickY = 0;
+                        debugprintf("e\n");
                         break;
 
                     case 3:
-                        view->_hidX = hatDelta;
-                        view->_hidY = hatDelta;
-                        printf("se\n");
+                        view->_handmadeContext.renderData.hidStickX = hatDelta;
+                        view->_handmadeContext.renderData.hidStickY = hatDelta;
+                        debugprintf("se\n");
                         break;
 
                     case 4:
-                        view->_hidX = 0;
-                        view->_hidY = hatDelta;
-                        printf("s\n");
+                        view->_handmadeContext.renderData.hidStickX = 0;
+                        view->_handmadeContext.renderData.hidStickY = hatDelta;
+                        debugprintf("s\n");
                         break;
 
                     case 5:
-                        view->_hidX = -hatDelta;
-                        view->_hidY = hatDelta;
-                        printf("sw\n");
+                        view->_handmadeContext.renderData.hidStickX = -hatDelta;
+                        view->_handmadeContext.renderData.hidStickY = hatDelta;
+                        debugprintf("sw\n");
                         break;
 
                     case 6:
-                        view->_hidX = -hatDelta;
-                        view->_hidY = 0;
-                        printf("w\n");
+                        view->_handmadeContext.renderData.hidStickX = -hatDelta;
+                        view->_handmadeContext.renderData.hidStickY = 0;
+                        debugprintf("w\n");
                         break;
 
                     case 7:
-                        view->_hidX = -hatDelta;
-                        view->_hidY = -hatDelta;
-                        printf("nw\n");
+                        view->_handmadeContext.renderData.hidStickX = -hatDelta;
+                        view->_handmadeContext.renderData.hidStickY = -hatDelta;
+                        debugprintf("nw\n");
                         break;
 
                     case 8:
-                        view->_hidX = 0;
-                        view->_hidY = 0;
-                        printf("up\n");
+                        view->_handmadeContext.renderData.hidStickX = 0;
+                        view->_handmadeContext.renderData.hidStickY = 0;
+                        debugprintf("up\n");
                         break;
                 }
 
             } break;
 
             default:
-                //NSLog(@"Gamepad Element: %@  Type: %d  Page: %d  Usage: %d  Name: %@  Cookie: %i  Value: %ld  _hidX: %d",
-                //      element, type, usagePage, usage, name, cookie, elementValue, view->_hidX);
+                //NSLog(@"Gamepad Element: %@  Type: %d  Page: %d  Usage: %d  Name: %@  Cookie: %i  Value: %ld  _hidStickX: %d",
+                //      element, type, usagePage, usage, name, cookie, elementValue, view->_handmadeContext.renderData.hidStickX);
                 break;
         }
     }
@@ -816,39 +832,39 @@ static void OSXHIDValueChanged(
 
             case kHIDUsage_KeyboardUpArrow:
                 keyName = @"Up";
-		view->_hidButtons[2] = elementValue;
+		view->_handmadeContext.renderData.hidButtons[2] = elementValue;
                 break;
 
             case kHIDUsage_KeyboardLeftArrow:
                 keyName = @"Left";
-		view->_hidButtons[3] = elementValue;
+		view->_handmadeContext.renderData.hidButtons[3] = elementValue;
                 break;
 
             case kHIDUsage_KeyboardDownArrow:
                 keyName = @"Down";
-		view->_hidButtons[1] = elementValue;
+		view->_handmadeContext.renderData.hidButtons[1] = elementValue;
                 break;
 
             case kHIDUsage_KeyboardRightArrow:
                 keyName = @"Right";
-		view->_hidButtons[4] = elementValue;
+		view->_handmadeContext.renderData.hidButtons[4] = elementValue;
                 break;
             case kHIDUsage_KeyboardL:
             {
                 keyName = @"l";
                 if (elementValue == 1){
-                    if(view->_recordingOn == 0){ // turn on
-                        OSXEndInputPlayBack(&view->_osxState);
-                        OSXBeginRecordingInput(&view->_osxState, 1);
-                        printf("starting recordning\n");
-                        view->_recordingOn = 1;
+                    if(view->_handmadeContext.renderData.recordingOn == 0){ // turn on
+                        OSXEndInputPlayBack(&view->_handmadeContext.renderData.osxState);
+                        OSXBeginRecordingInput(&view->_handmadeContext.renderData.osxState, 1);
+                        debugprintf("starting recordning\n");
+                        view->_handmadeContext.renderData.recordingOn = 1;
                     }
                     else // turn off
                     {
-                        printf("ending recordning\n");
-                        view->_recordingOn = 0;
-                        OSXEndRecordingInput(&view->_osxState);
-                        OSXBeginInputPlayBack(&view->_osxState, 1);
+                        debugprintf("ending recordning\n");
+                        view->_handmadeContext.renderData.recordingOn = 0;
+                        OSXEndRecordingInput(&view->_handmadeContext.renderData.osxState);
+                        OSXBeginInputPlayBack(&view->_handmadeContext.renderData.osxState, 1);
 
                         
                     }
@@ -867,38 +883,39 @@ static void OSXHIDValueChanged(
         if (elementValue == 1)
         {
             NSLog(@"%@ pressed (%d)", keyName, usage);
-            view->_dummy[usage] = 1;
+            view->_handmadeContext.renderData.dummy[usage] = 1;
             
         }
         else if (elementValue == 0)
         {
             NSLog(@"%@ released", keyName);
-            view->_dummy[usage] = 0;
+            view->_handmadeContext.renderData.dummy[usage] = 0;
             
         }
     }
+    
     else if (usagePage == 9) // Buttons
     {
         if (elementValue == 1)
         {
-            view->_hidButtons[usage] = 1;
+            view->_handmadeContext.renderData.hidButtons[usage] = 1;
             NSLog(@"Button %d pressed", usage);
         }
         else if (elementValue == 0)
         {
-            view->_hidButtons[usage] = 0;
+            view->_handmadeContext.renderData.hidButtons[usage] = 0;
             NSLog(@"Button %d released", usage);
         }
         else
         {
-            //NSLog(@"Gamepad Element: %@  Type: %d  Page: %d  Usage: %d  Name: %@  Cookie: %i  Value: %ld  _hidX: %d",
-            //    element, type, usagePage, usage, name, cookie, elementValue, view->_hidX);
+            //NSLog(@"Gamepad Element: %@  Type: %d  Page: %d  Usage: %d  Name: %@  Cookie: %i  Value: %ld  _hidStickX: %d",
+            //    element, type, usagePage, usage, name, cookie, elementValue, view->_handmadeContext.renderData.hidStickX);
         }
     }
     else
     {
-        //NSLog(@"Gamepad Element: %@  Type: %d  Page: %d  Usage: %d  Name: %@  Cookie: %i  Value: %ld  _hidX: %d",
-        //    element, type, usagePage, usage, name, cookie, elementValue, view->_hidX);
+        //NSLog(@"Element: %@  Page: %d  Usage: %d  Name: %@  Cookie: %i  Value: %ld  _hidStickX: %d",
+	//element, usagePage, usage, name, cookie, elementValue, view->_handmadeContext.renderData.hidStickX);
     }
 } 
 
@@ -1097,521 +1114,6 @@ void OSXStopCoreAudio()
 
 
 
-
-
-/*
-####### ######  ####### #     #  #####  #       
-#     # #     # #       ##    # #     # #       
-#     # #     # #       # #   # #       #       
-#     # ######  #####   #  #  # #  #### #       
-#     # #       #       #   # # #     # #       
-#     # #       #       #    ## #     # #       
-####### #       ####### #     #  #####  ####### 
-*/                                                
-// OpenGL utils
-const char* GetErrorString(GLenum errorCode)
-{
-    static const struct {
-        GLenum code;
-        const char *string;
-    } errors[]=
-    {
-        /* GL */
-        {GL_NO_ERROR, "no error"},
-        {GL_INVALID_ENUM, "invalid enumerant"},
-        {GL_INVALID_VALUE, "invalid value"},
-        {GL_INVALID_OPERATION, "invalid operation"},
-//        {GL_STACK_OVERFLOW, "stack overflow"},
-//        {GL_STACK_UNDERFLOW, "stack underflow"},
-        {GL_OUT_OF_MEMORY, "out of memory"},
-
-        {0, NULL }
-    };
-
-    int i;
-
-    for (i=0; errors[i].string; i++)
-    {
-        if (errors[i].code == errorCode)
-        {
-            return errors[i].string;
-        }
-     }
-
-    return NULL;
-}
-int PrintOglError(char *file, int line)
-{
-
-    GLenum glErr;
-    int    retCode = 0;
-
-    glErr = glGetError();
-    if (glErr != GL_NO_ERROR)
-    {
-        printf("glError in file %s @ line %d: %s\n",
-			     file, line, GetErrorString(glErr));
-        retCode = 1;
-    }
-    return retCode;
-}
-#define PrintOpenGLError() PrintOglError(__FILE__, __LINE__)
-
-
-static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink, 
-				    const CVTimeStamp* now, 
-				    const CVTimeStamp* outputTime, 
-				    CVOptionFlags flagsIn, 
-				    CVOptionFlags* flagsOut, 
-				    void* displayLinkContext)
-{
-    CVReturn result = [( HandmadeView*)displayLinkContext getFrameForTime:outputTime];
-    // NSLog(@"callback");
-    return result;
-}
-
-
-/*
-### #     # ### ####### 
- #  ##    #  #     #    
- #  # #   #  #     #    
- #  #  #  #  #     #    
- #  #   # #  #     #    
- #  #    ##  #     #    
-### #     # ###    #    
-*/
-@implementation HandmadeView
-
-- (BOOL) acceptsFirstResponder{
-    return YES;
-}
-
-- (instancetype)initWithFrame:(NSRect)frameRect {
-    
-    NSLog(@"initWithFrame");
-    if (_setupComplete){
-        printf("trying to init again...\n");
-        return self;
-    }
-    // setup pixel format
-    NSOpenGLPixelFormatAttribute attribs[] = {
-
-	NSOpenGLPFAAccelerated,
-        NSOpenGLPFANoRecovery,
-        NSOpenGLPFADoubleBuffer,
-        NSOpenGLPFAOpenGLProfile, NSOpenGLProfileVersion3_2Core,
-        0
-    };
-    
-    NSOpenGLPixelFormat *fmt = [[NSOpenGLPixelFormat alloc]
-				       initWithAttributes: attribs];
-    
-    self = [super initWithFrame: frameRect pixelFormat:fmt];
-    
-    // Offscreen render buffer 
-    if (self) {
-        _renderBuffer.Width = 960;
-        _renderBuffer.BytesPerPixel = 4;
-        _renderBuffer.Height = 540;
-        _renderBuffer.Pitch = _renderBuffer.Width * 4; // bytes per pixel = 4
-        _renderBuffer.Memory = calloc(1, _renderBuffer.Pitch * _renderBuffer.Height);
-    }
-
-    // General Game mem
-
-    _gameMemory.PermanentStorageSize = Megabytes(64);
-    _gameMemory.TransientStorageSize = Gigabytes(1);
-    _gameMemory.DEBUGPlatformFreeFileMemory = DEBUGPlatformFreeFileMemory;
-    _gameMemory.DEBUGPlatformReadEntireFile = DEBUGPlatformReadEntireFile;
-    _gameMemory.DEBUGPlatformWriteEntireFile = DEBUGPlatformWriteEntireFile;
-
-    
-
-    // TODO(casey): Handle various memory footprints (USING SYSTEM METRICS)
-    uint64 TotalSize = _gameMemory.PermanentStorageSize + _gameMemory.TransientStorageSize;
-
-    // NOTE:(filip): mac os x has a quite different mem system then windows so 
-    // we can't transfer the exact same values. My test shows that a BaseAddress
-    //  above 5 GB seems to work. I would prefer to have a solid number here but
-    //  since it is for debugging purposes this is easily changed so that it 
-    // works per dev machine/OS version etc.
-
-    // The game
-    void * RequestedAddress = (void*)Gigabytes(8);
-    void * BaseAddress;
-#if 0
-    kern_return_t result = vm_allocate((vm_map_t)mach_task_self(),
-                                       (vm_address_t*)&BaseAddress,
-                                       TotalSize,
-                                       VM_FLAGS_FIXED);
-
-    if (result != KERN_SUCCESS)
-    {
-        NSLog(@"Error allocating memory");
-    }
-#endif
-    BaseAddress = mmap(RequestedAddress, TotalSize,
-                                        PROT_READ|PROT_WRITE,
-                                        MAP_PRIVATE|MAP_FIXED|MAP_ANON,
-                                        -1, 0);
-    if (BaseAddress == MAP_FAILED)
-    {
-        NSLog(@"Mapping faield.");
-    }
-    _osxState.TotalSize = TotalSize;
-    _osxState.GameMemoryBlock = (void*)BaseAddress;
-
-    _gameMemory.PermanentStorage = _osxState.GameMemoryBlock ;
-    _gameMemory.TransientStorage = ((uint8*)_gameMemory.PermanentStorage
-                                   + _gameMemory.PermanentStorageSize);
-    
-    NSString *bundlePath = [[NSBundle mainBundle] resourcePath];
-    NSString *secondParentPath = [[bundlePath stringByDeletingLastPathComponent] stringByDeletingLastPathComponent];
-    _mainBundlePath = [secondParentPath stringByDeletingLastPathComponent];
-    NSLog(@"main bundle path%@", _mainBundlePath);
-    strcpy(_osxState.MainBundlePath, [_mainBundlePath UTF8String]);
-    printf("main bundle string:%s\n", _osxState.MainBundlePath);
-
-    for(int ReplayIndex = 0;
-            ReplayIndex < ArrayCount(_osxState.ReplayBuffers);
-            ++ReplayIndex)
-        {
-            osx_replay_buffer *ReplayBuffer = &_osxState.ReplayBuffers[ReplayIndex];
-            
-            // Create filename for the state
-            OSXGetInputFileLocation(&_osxState, false, ReplayIndex, ReplayBuffer->FileName );
-
-            ReplayBuffer->FileDescriptor = open(
-                ReplayBuffer->FileName, O_RDWR | O_CREAT /*| O_NONBLOCK|  O_TRUNC*/, 0666);
-
-
-            
-            // pre alloc?
-            //fstore_t store = {F_ALLOCATECONTIG, F_PEOFPOSMODE, 0, TotalSize};
-            //int ret = fcntl(ReplayBuffer->FileDescriptor, F_PREALLOCATE, &store);
-            //ftruncate(ReplayBuffer->FileDescriptor, TotalSize);
-            
-            ReplayBuffer->MemoryBlock = mmap(0, TotalSize, 
-                PROT_READ|PROT_WRITE, /*MAP_SHARED*/MAP_PRIVATE, 
-                ReplayBuffer->FileDescriptor, 0);
-        
-            
-            if(ReplayBuffer->MemoryBlock)
-            {
-
-            }
-            else
-            {
-                // TODO(casey): Diagnostic
-            }
-        }
-
-
-    // load game code
-    const char *frameworksPath = [[[NSBundle mainBundle] privateFrameworksPath] UTF8String];
-    char dylibpath[512];
-    snprintf(dylibpath, 512, "%s%s", frameworksPath, "/handmade.dylib");
-    
-    _gameCode = OSXLoadGameCode(dylibpath);
-
-    // timing
-    mach_timebase_info_data_t timebase;
-    mach_timebase_info(&timebase);
-    _machTimebaseConversionFactor = (double)timebase.numer / (double)timebase.denom;
-
-    _setupComplete = YES;
-    return self;
-}
-
-#define BUFFER_OFFSET(i) ((char *)NULL + (i))
-- (void)prepareOpenGL
-{
-    NSLog(@"Preparing opengl");
-    [super prepareOpenGL];
-    [[self openGLContext] makeCurrentContext];
-    [[self window] makeKeyAndOrderFront: self];
-    
-    GLint swapInt = 1;
-    [[self openGLContext] setValues:&swapInt forParameter:NSOpenGLCPSwapInterval];
-
-    // Create a texture object
-    glGenTextures(1, &_tex);
-    glBindTexture(GL_TEXTURE_2D, _tex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, _renderBuffer.Width, _renderBuffer.Height,
-		 0, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, NULL);
-    
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    
-    // Create opengl objects
-    // fullscreen quad using two triangles
-    glGenVertexArrays(1, &_vao);
-    glBindVertexArray(_vao);
-
-    glGenBuffers(1, &_vbo);
-    glBindBuffer(GL_ARRAY_BUFFER, _vbo);
-    PrintOpenGLError();
-    // define data and upload (interleaved x,y,z,s,t
-    // A-D
-    // |\|
-    // B-C
-     
-    // GLfloat vertices[] = {
-    // 	-1,  1, 0, 0, 1, // A
-    // 	-1, -1, 0, 0, 0, // B
-    // 	1,  -1, 0, 1, 0, // C
-
-    // 	-1,  1, 0, 0, 1, // A
-    // 	1,  -1, 0, 1, 0, // C
-    // 	1,  1,  0, 1, 1 //  D 
-    // };
-
-    // A-D
-    // |\|
-    // B-C
-    
-    GLfloat vertices[] = {
-	-1,  1, 0, 0, 0, // A
-	-1, -1, 0, 0, 1, // B
-	1,  -1, 0, 1, 1, // C
-
-	-1,  1, 0, 0, 0, // A
-	1,  -1, 0, 1, 1, // C
-	1,  1,  0, 1, 0 //  D 
-    };
-    size_t bytes = sizeof(GLfloat) * 6 *5;
-
-    // upload data
-    glBufferData(GL_ARRAY_BUFFER, bytes, vertices, GL_STATIC_DRAW);
-    // specify vertex format
-    glEnableVertexAttribArray(2);
-    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(float)*5, BUFFER_OFFSET(0));
-
-    glEnableVertexAttribArray(3);
-    glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, sizeof(float)*5, BUFFER_OFFSET(12));
-    PrintOpenGLError();
-    // Shader source
-    static const char* vertexShaderString =
-	"#version 330 core\n"
-	"layout (location = 2) in vec3 position;\n"
-	"layout (location = 3) in vec2 texcoord;\n"
-	"out vec2 v_texcoord;\n"
-	"void main(void) {\n"
-	"	gl_Position  = vec4(position, 1.0);\n"
-	"       v_texcoord = texcoord;\n"
-	"}\n";
-
-    static const char* fragmentShaderString =
-	"#version 330 core\n"
-	"layout (location = 0) out vec4 outColor0;\n"
-	"uniform sampler2D tex0;\n"
-	"in vec2 v_texcoord;\n "
-	"void main(void)\n"
-	"{\n"
-	"        vec4 texel = texture(tex0, v_texcoord.st);\n"
-	"        outColor0 = texel;\n"
-	"}\n";
-    
-    // Create the shader
-    GLuint program, vertex, fragment;
-    program = glCreateProgram();
-    vertex = glCreateShader(GL_VERTEX_SHADER);
-    fragment = glCreateShader(GL_FRAGMENT_SHADER);
-    GLint logLength;
-    GLint status;	
-    PrintOpenGLError();
-    glShaderSource(vertex, 1, (const GLchar **)&vertexShaderString, NULL);
-    glCompileShader(vertex);
-	
-    glGetShaderiv(vertex, GL_INFO_LOG_LENGTH, &logLength);
-    if (logLength > 0)
-    {
-	GLchar *log = (GLchar *)malloc(logLength);
-	glGetShaderInfoLog(vertex, logLength, &logLength, log);
-	printf("VertexShader compile log:\n%s\n", log);
-	free(log);
-    }
-    glGetShaderiv(vertex, GL_COMPILE_STATUS, &status);
-    
-    if (status == 0)
-    {
-	glDeleteShader(vertex);
-	NSLog(@"vertex shgader compile failed\n");
-    }
-	
-    glShaderSource(fragment, 1, (const GLchar **)&fragmentShaderString, NULL);
-    glCompileShader(fragment);
-	    
-    glGetShaderiv(fragment, GL_INFO_LOG_LENGTH, &logLength);
-    if (logLength > 0)
-    {
-	GLchar *log = (GLchar *)malloc(logLength);
-	glGetShaderInfoLog(fragment, logLength, &logLength, log);
-	printf("FragmentShader compile log:\n%s\n", log);
-	free(log);
-    }
-    
-    glGetShaderiv(fragment, GL_COMPILE_STATUS, &status);
-    
-    if (status == 0)
-    {
-	glDeleteShader(fragment);
-	NSLog(@"fragmetb shgader compile failed\n");
-    }
-	
-    // Attach vertex shader to program
-    glAttachShader(program, vertex);
-    
-    // Attach fragment shader to program
-    glAttachShader(program, fragment);
-
-    
-    glLinkProgram(program);
-	
-    glGetProgramiv(program, GL_INFO_LOG_LENGTH, &logLength);
-    if (logLength > 0)
-    {
-	GLchar *log = (GLchar *)malloc(logLength);
-	glGetProgramInfoLog(program, logLength, &logLength, log);
-	printf("Program link log:\n%s\n", log);
-        
-	free(log);
-    }
-    glGetProgramiv(program, GL_LINK_STATUS, &status);
-    if (status == 0) {
-	NSLog(@"fragmetb shgader compile failed\n");
-    }
-    _program = program;
-    PrintOpenGLError();
-    
-    
-    // Display link
-    CVDisplayLinkCreateWithActiveCGDisplays(&_displayLink);
-    CVDisplayLinkSetOutputCallback(_displayLink, &DisplayLinkCallback, ( void *)(self));
-
-    CGLContextObj cglContext = [[self openGLContext] CGLContextObj];
-    CGLPixelFormatObj cglPixelFormat = [[self pixelFormat] CGLPixelFormatObj];
-    CVDisplayLinkSetCurrentCGDisplayFromOpenGLContext(_displayLink, cglContext, cglPixelFormat);
-    CVDisplayLinkStart(_displayLink);
-}
-- (CVReturn) getFrameForTime:(const CVTimeStamp*)outputTime
-{
-    //NSLog(@"getFrameForTImel");
-    @autoreleasepool
-    {
-	
-	[self drawRect: [self bounds]];
-    }
-    
-    return kCVReturnSuccess;
-}
-- (void) becomeKeyWindow
-{
-
-    [s_window setAlphaValue:1.0];
-}
-
-/*
-######  ######     #    #     # 
-#     # #     #   # #   #  #  # 
-#     # #     #  #   #  #  #  # 
-#     # ######  #     # #  #  # 
-#     # #   #   ####### #  #  # 
-#     # #    #  #     # #  #  # 
-######  #     # #     #  ## ##  
-                                
-*/ 
-
-
-- (void)drawRect:(NSRect)rect {
-
-    //NSLog(@"drawing");
-    CGLLockContext([[self openGLContext] CGLContextObj]);
-    [self reshape];
-
-    thread_context Thread = {};
-    
-    game_offscreen_buffer Buffer = {};
-    Buffer.Memory = _renderBuffer.Memory;
-    Buffer.Width = _renderBuffer.Width; 
-    Buffer.Height = _renderBuffer.Height;
-    Buffer.Pitch = _renderBuffer.Pitch; 
-    Buffer.BytesPerPixel = _renderBuffer.BytesPerPixel; 
-
-    real32 MonitorRefreshHz = 60;
-    real32 GameUpdateHz = (MonitorRefreshHz / 2.0f);
-    real32 TargetSecondsPerFrame = 1.0f / (real32)GameUpdateHz;
-
-    // TODO(jeff): Fix this for multiple controllers
-    local_persist game_input Input[2] = {};
-    local_persist game_input* NewInput = &Input[0];
-    local_persist game_input* OldInput = &Input[1];
-
-    game_controller_input* OldController = &OldInput->Controllers[0];
-    game_controller_input* NewController = &NewInput->Controllers[0];
-
-    NewController->IsAnalog = false;
-    int RightDown = _dummy[kHIDUsage_KeyboardRightArrow];
-    int LeftDown = _dummy[kHIDUsage_KeyboardLeftArrow];
-
-    NewController->StickAverageX = RightDown? 2:LeftDown?-2:0;
-    NewController->StickAverageY = _dummy[kHIDUsage_KeyboardUpArrow]*2;
-    GlobalFrequency = 440.0 + (15 * NewController->StickAverageY); 
-
-    NewController->MoveDown.EndedDown = _hidButtons[1];
-    NewController->MoveUp.EndedDown = _hidButtons[2];
-    NewController->MoveLeft.EndedDown = _hidButtons[3];
-    NewController->MoveRight.EndedDown = _hidButtons[4];
-
-    NewInput->dtForFrame = TargetSecondsPerFrame;
-    
-    if (_recordingOn) printf("_recordingOn:%d\n", _recordingOn);
-    if(_osxState.InputRecordingIndex && _recordingOn)
-    {
-        OSXRecordInput(&_osxState, NewInput);
-        printf("recording\n");
-    }
-
-    if(_osxState.InputPlayingIndex && _recordingOn == 0)
-    {
-        OSXPlayBackInput(&_osxState, NewInput);
-        printf("playing back\n");
-    }
-
-    if(_gameCode.UpdateAndRender){
-        _gameCode.UpdateAndRender(&Thread, &_gameMemory, NewInput, &Buffer);
-    }
-
-    // copy into texture
-    [[self openGLContext] makeCurrentContext];
-
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, _tex);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, Buffer.Width, Buffer.Height,
-		    GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, Buffer.Memory);
-
-    
-    glClearColor(0.2, 0.22 ,0.20, 1);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-    glDisable(GL_DEPTH_TEST);
-    glViewport(0, 0, rect.size.width, rect.size.height);
-    glUniform1i(glGetUniformLocation(_program, "tex0"), 0);
-    glUseProgram(_program);
-    glBindVertexArray(_vao);
-
-    glBindBuffer(GL_ARRAY_BUFFER, _vbo);
-    
-    glDrawArrays(GL_TRIANGLES, 0, 6);
-    PrintOpenGLError();
-    OSXReloadIfModified(&_gameCode);
-    CGLFlushDrawable([[self openGLContext] CGLContextObj]);
-    CGLUnlockContext([[self openGLContext] CGLContextObj]);
-
-
- }
-@end
-
 /*
 ####### #     # ####### ######  #     # 
 #       ##    #    #    #     #  #   #  
@@ -1640,18 +1142,17 @@ static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink,
     {
 	s_window = window;
 	NSRect frame = [[s_window contentView] bounds];
-	s_view = [[HandmadeView alloc] initWithFrame: frame];
+	s_view = [[GLView alloc] initWithFrame: frame];
 	[s_window setContentView:   s_view];
-
-    
-
-    [s_window orderFrontRegardless];
-    [window setLevel: NSStatusWindowLevel];
-    [window makeKeyAndOrderFront:self];
-
-    // init joysticks etc
-    OSXHIDSetup();
-    OSXInitCoreAudio();
+	
+	[s_window orderFrontRegardless];
+	[window setLevel: NSStatusWindowLevel];
+	[window makeKeyAndOrderFront:self];
+	
+	// init joysticks etc
+	OSXHIDSetup();
+	OSXInitCoreAudio();
+	
     }
 
 }

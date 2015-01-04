@@ -8,6 +8,8 @@
 
 /* Begin PBXFileReference section */
 		DC8C5AFC1A3DA03400701EF7 /* osx_handmade.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; name = osx_handmade.mm; path = ../../osx_handmade.mm; sourceTree = "<group>"; };
+		DC96C2DD1A58472A00054033 /* HandmadeRenderer.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; name = HandmadeRenderer.mm; path = ../../HandmadeRenderer.mm; sourceTree = "<group>"; };
+		DC96C2DE1A58473300054033 /* glview.insert */ = {isa = PBXFileReference; lastKnownFileType = text; name = glview.insert; path = ../../glview.insert; sourceTree = "<group>"; };
 		DCE3E6DD1A420441001FC368 /* handmade.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = handmade.cpp; path = ../../handmade.cpp; sourceTree = "<group>"; };
 		DCE3E6DE1A420441001FC368 /* handmade.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = handmade.h; path = ../../handmade.h; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -19,6 +21,8 @@
 				DC8C5AFC1A3DA03400701EF7 /* osx_handmade.mm */,
 				DCE3E6DD1A420441001FC368 /* handmade.cpp */,
 				DCE3E6DE1A420441001FC368 /* handmade.h */,
+				DC96C2DD1A58472A00054033 /* HandmadeRenderer.mm */,
+				DC96C2DE1A58473300054033 /* glview.insert */,
 			);
 			sourceTree = "<group>";
 		};
